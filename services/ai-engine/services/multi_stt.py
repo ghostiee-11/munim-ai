@@ -1,6 +1,6 @@
 """
 Multi-provider STT service for MunimAI.
-Providers: OpenAI Whisper (primary) -> ElevenLabs Scribe v2 -> Sarvam AI -> Groq Whisper (fallback)
+Providers: Groq Whisper (free) -> ElevenLabs Scribe v2 -> Sarvam AI -> OpenAI Whisper (paid fallback)
 """
 import logging
 import io
@@ -34,12 +34,12 @@ async def transcribe_multi(
     settings = get_settings()
     errors = []
 
-    # Build provider order
+    # Build provider order: free/cheap first, OpenAI (paid) last as fallback
     providers = [
-        ("openai_whisper", _openai_whisper),
+        ("groq_whisper", _groq_whisper),
         ("elevenlabs", _elevenlabs_scribe),
         ("sarvam", _sarvam_stt),
-        ("groq_whisper", _groq_whisper),
+        ("openai_whisper", _openai_whisper),
     ]
 
     # If a preferred provider is specified, move it to the front
