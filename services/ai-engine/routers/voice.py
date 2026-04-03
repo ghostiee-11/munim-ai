@@ -33,67 +33,18 @@ settings = get_settings()
 
 async def transcribe_audio(audio_bytes: bytes, language: str = "hi") -> str:
     """
-    Send raw audio for transcription.
+    Send raw audio for transcription via multi-provider STT.
 
-    Primary: OpenAI Whisper (more reliable for Hindi).
-    Fallback: Groq Whisper (if OpenAI fails).
+    Uses the unified multi_stt service which tries:
+    OpenAI Whisper -> ElevenLabs Scribe v2 -> Sarvam AI -> Groq Whisper
 
     Supports Hindi, English, and Hinglish. Returns the transcribed text.
     """
-    import httpx
+    from services.multi_stt import transcribe_multi
 
-    stt_provider = None
-
-    # --- Try OpenAI Whisper first (primary) ---
-    if settings.openai_api_key:
-        try:
-            openai_url = "https://api.openai.com/v1/audio/transcriptions"
-            openai_headers = {"Authorization": f"Bearer {settings.openai_api_key}"}
-            openai_files = {
-                "file": ("audio.webm", io.BytesIO(audio_bytes), "audio/webm"),
-            }
-            openai_data = {
-                "model": "whisper-1",
-                "language": language,
-                "response_format": "text",
-            }
-
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(openai_url, headers=openai_headers, files=openai_files, data=openai_data)
-
-            if resp.status_code == 200:
-                transcript = resp.text.strip()
-                stt_provider = "openai"
-                logger.info("STT [OpenAI Whisper] transcript: %s", transcript)
-                return transcript
-            else:
-                logger.warning("OpenAI Whisper failed (%s), falling back to Groq: %s", resp.status_code, resp.text)
-        except Exception as exc:
-            logger.warning("OpenAI Whisper exception, falling back to Groq: %s", exc)
-
-    # --- Fallback: Groq Whisper ---
-    groq_url = "https://api.groq.com/openai/v1/audio/transcriptions"
-    groq_headers = {"Authorization": f"Bearer {settings.groq_api_key}"}
-    groq_files = {
-        "file": ("audio.webm", io.BytesIO(audio_bytes), "audio/webm"),
-    }
-    groq_data = {
-        "model": settings.groq_whisper_model,
-        "language": language,
-        "response_format": "text",
-    }
-
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(groq_url, headers=groq_headers, files=groq_files, data=groq_data)
-
-    if resp.status_code != 200:
-        logger.error("Groq Whisper STT also failed: %s %s", resp.status_code, resp.text)
-        raise HTTPException(status_code=502, detail=f"STT service error: {resp.text}")
-
-    transcript = resp.text.strip()
-    stt_provider = "groq"
-    logger.info("STT [Groq Whisper fallback] transcript: %s", transcript)
-    return transcript
+    result = await transcribe_multi(audio_bytes, language)
+    logger.info("STT [%s] transcript: %s", result.get("provider"), result.get("text"))
+    return result["text"]
 
 
 # ---------------------------------------------------------------------------
@@ -207,8 +158,8 @@ async def synthesize_speech(text: str, language: str = "hi") -> Optional[str]:
     payload = {
         "inputs": [text],
         "target_language_code": "hi-IN" if language == "hi" else "en-IN",
-        "speaker": "meera",
-        "model": "bulbul:v1",
+        "speaker": "anushka",
+        "model": "bulbul:v2",
     }
 
     try:
@@ -277,19 +228,53 @@ async def process_voice(
     # 3. NLU
     nlu = await run_nlu(transcript, language)
 
-    # 4. Action routing
-    action_result = await route_action(merchant_id, nlu)
+    # 4. Action routing OR conversational Groq LLM
+    if nlu.intent not in ("greeting", "unknown", "help") and nlu.confidence > 0.75:
+        action_result = await route_action(merchant_id, nlu)
+        response_text = action_result.response_text
+        action_data = action_result.data
+        success = action_result.success
+    else:
+        # Conversational: use Groq LLM for a natural Hindi response
+        import httpx as _httpx
+        try:
+            today_txns = db.select("transactions", filters={"merchant_id": merchant_id})
+            inc = sum(t.get("amount", 0) for t in today_txns if t.get("type") == "income")
+            exp = sum(t.get("amount", 0) for t in today_txns if t.get("type") == "expense")
+            ctx = f"Income: Rs {inc:,.0f}, Expense: Rs {exp:,.0f}, Profit: Rs {inc-exp:,.0f}"
+        except Exception:
+            ctx = ""
 
-    # 5. TTS (non-blocking best-effort)
-    audio_url = await synthesize_speech(action_result.response_text, language)
+        try:
+            async with _httpx.AsyncClient(timeout=15.0) as c:
+                r = await c.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {settings.groq_api_key}"},
+                    json={
+                        "model": settings.groq_model,
+                        "messages": [
+                            {"role": "system", "content": f"You are Muneem AI, a warm Hindi-speaking AI accountant. Respond in Hinglish, 2-3 sentences. Context: {ctx}"},
+                            {"role": "user", "content": transcript},
+                        ],
+                        "temperature": 0.7, "max_tokens": 200,
+                    },
+                )
+            response_text = r.json()["choices"][0]["message"]["content"] if r.status_code == 200 else "Maaf kijiye, samajh nahi aaya."
+        except Exception:
+            response_text = "Namaste! Main Muneem hoon. Kya madad kar sakta hoon?"
+        action_data = {}
+        success = True
+
+    # 5. TTS
+    audio_url = await synthesize_speech(response_text, language)
 
     # 6. Emit real-time event
     response = VoiceResponse(
-        success=action_result.success,
+        success=success,
         transcript=transcript,
         nlu=nlu,
-        action_result=action_result.data,
-        response_text=action_result.response_text,
+        action_result=action_data,
+        response_text=response_text,
         response_audio_url=audio_url,
     )
 
@@ -396,7 +381,7 @@ async def chat_with_muneem(req: VoiceTextRequest):
     nlu = await run_nlu(text, language)
 
     # If it's a clear action (not greeting/unknown/help), route it
-    if nlu.intent not in ("greeting", "unknown", "help") and nlu.confidence > 0.7:
+    if nlu.intent not in ("greeting", "unknown", "help") and nlu.confidence > 0.75:
         action_result = await route_action(merchant_id, nlu)
         audio_url = await synthesize_speech(action_result.response_text, language)
         return {
@@ -494,8 +479,38 @@ async def process_text(req: VoiceTextRequest):
     # NLU
     nlu = await run_nlu(req.text, req.language)
 
-    # Action
-    action_result = await route_action(req.merchant_id, nlu)
+    # Action OR conversational Groq LLM
+    if nlu.intent not in ("greeting", "unknown", "help") and nlu.confidence > 0.75:
+        action_result = await route_action(req.merchant_id, nlu)
+    else:
+        # Use Groq LLM for conversational response
+        import httpx as _httpx
+        try:
+            txns = db.select("transactions", filters={"merchant_id": req.merchant_id})
+            inc = sum(t.get("amount", 0) for t in txns if t.get("type") == "income")
+            exp = sum(t.get("amount", 0) for t in txns if t.get("type") == "expense")
+            ctx = f"Income: Rs {inc:,.0f}, Expense: Rs {exp:,.0f}, Profit: Rs {inc-exp:,.0f}"
+        except Exception:
+            ctx = ""
+        try:
+            async with _httpx.AsyncClient(timeout=15.0) as c:
+                r = await c.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {settings.groq_api_key}"},
+                    json={
+                        "model": settings.groq_model,
+                        "messages": [
+                            {"role": "system", "content": f"You are Muneem AI, a warm Hindi-speaking AI accountant for Indian small businesses. Respond in natural Hinglish, 2-3 sentences. Be helpful and specific. Context: {ctx}"},
+                            {"role": "user", "content": req.text},
+                        ],
+                        "temperature": 0.7, "max_tokens": 200,
+                    },
+                )
+            resp_text = r.json()["choices"][0]["message"]["content"] if r.status_code == 200 else "Maaf kijiye, samajh nahi aaya."
+        except Exception:
+            resp_text = "Namaste! Kya madad kar sakta hoon?"
+        from services.action_router import ActionResult
+        action_result = ActionResult(success=True, response_text=resp_text)
 
     # TTS
     audio_url = await synthesize_speech(action_result.response_text, req.language)
@@ -512,6 +527,128 @@ async def process_text(req: VoiceTextRequest):
     await realtime.emit_voice_response(req.merchant_id, response.model_dump())
 
     return response
+
+
+# ---------------------------------------------------------------------------
+# Multi-provider STT endpoints (audio/process, audio/transcript)
+# ---------------------------------------------------------------------------
+
+DEMO_MERCHANT_ID = "11111111-1111-1111-1111-111111111111"
+
+
+@router.post("/audio/process")
+async def process_audio_multi(
+    file: UploadFile = File(...),
+    language: str = Form("hi"),
+    source: str = Form("soundbox"),
+    merchant_id: str = Form(DEMO_MERCHANT_ID),
+    stt_provider: str = Form("auto"),
+):
+    """Multi-provider audio processing with STT provider info."""
+    from services.multi_stt import transcribe_multi
+
+    audio_bytes = await file.read()
+    if len(audio_bytes) < 100:
+        raise HTTPException(status_code=400, detail="Audio file is too small or empty.")
+
+    preferred = stt_provider if stt_provider != "auto" else None
+    stt_result = await transcribe_multi(
+        audio_bytes, language, file.filename or "audio.webm", preferred_provider=preferred,
+    )
+
+    transcript = stt_result["text"]
+    provider = stt_result["provider"]
+
+    # Run NLU first to detect actionable commands
+    nlu = await run_nlu(transcript, language)
+    nlu_dict = nlu.model_dump() if hasattr(nlu, "model_dump") else nlu.dict()
+
+    # If it's a clear action (not greeting/unknown/help), route through action pipeline
+    if nlu.intent not in ("greeting", "unknown", "help") and nlu.confidence > 0.75:
+        action_result = await route_action(merchant_id, nlu)
+        response_text = action_result.response_text
+        action_data = action_result.data
+        is_action = True
+    else:
+        # Use Groq LLM for conversational response (like chat endpoint)
+        import httpx
+        try:
+            # Get merchant context
+            today_txns = db.select("transactions", filters={"merchant_id": merchant_id})
+            total_income = sum(t.get("amount", 0) for t in today_txns if t.get("type") == "income")
+            total_expense = sum(t.get("amount", 0) for t in today_txns if t.get("type") == "expense")
+            context = f"Income: Rs {total_income:,.0f}, Expense: Rs {total_expense:,.0f}, Profit: Rs {total_income - total_expense:,.0f}"
+        except Exception:
+            context = "No data yet"
+
+        chat_prompt = (
+            "You are Muneem AI, a friendly Hindi-speaking AI accountant for Indian small businesses. "
+            "Respond in natural Hinglish (Hindi-English mix). Be warm, concise (2-3 sentences max). "
+            f"Merchant context: {context}. "
+            f"User said: {transcript}"
+        )
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {settings.groq_api_key}"},
+                    json={
+                        "model": settings.groq_model,
+                        "messages": [{"role": "system", "content": chat_prompt}, {"role": "user", "content": transcript}],
+                        "temperature": 0.7,
+                        "max_tokens": 200,
+                    },
+                )
+            if resp.status_code == 200:
+                response_text = resp.json()["choices"][0]["message"]["content"]
+            else:
+                response_text = "Maaf kijiye, samajh nahi aaya. Kripya dobara boliye."
+        except Exception:
+            response_text = "Namaste! Main Muneem hoon. Kya madad kar sakta hoon?"
+
+        action_data = {}
+        is_action = False
+
+    audio_url = await synthesize_speech(response_text, language)
+
+    return {
+        "transcript": transcript,
+        "stt_provider": provider,
+        "language": stt_result.get("language", language),
+        "segments": stt_result.get("segments"),
+        "nlu": nlu_dict,
+        "action_result": action_data,
+        "response_text": response_text,
+        "response_audio_url": audio_url,
+        "is_action": is_action,
+    }
+
+
+@router.post("/audio/transcript")
+async def transcript_only(
+    file: UploadFile = File(...),
+    language: str = Form("hi"),
+    stt_provider: str = Form("auto"),
+):
+    """STT only -- no NLU processing."""
+    from services.multi_stt import transcribe_multi
+
+    audio_bytes = await file.read()
+    if len(audio_bytes) < 100:
+        raise HTTPException(status_code=400, detail="Audio file is too small or empty.")
+
+    preferred = stt_provider if stt_provider != "auto" else None
+    result = await transcribe_multi(
+        audio_bytes, language, file.filename or "audio.webm", preferred_provider=preferred,
+    )
+
+    return {
+        "transcript": result["text"],
+        "stt_provider": result["provider"],
+        "language": result.get("language", language),
+        "segments": result.get("segments"),
+    }
 
 
 # ---------------------------------------------------------------------------

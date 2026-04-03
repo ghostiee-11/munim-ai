@@ -254,37 +254,47 @@ async def twilio_webhook(request: Request):
     # Generate TTS voice note and send as a follow-up message
     try:
         from routers.voice import synthesize_speech
-        import base64, os, uuid
+        import base64, uuid
 
-        audio_data_uri = await synthesize_speech(reply_text, "hi")
-        if audio_data_uri and audio_data_uri.startswith("data:audio"):
+        # Truncate text to avoid TTS timeout (max ~200 chars)
+        tts_text = reply_text[:200] if len(reply_text) > 200 else reply_text
+        audio_data_uri = await synthesize_speech(tts_text, "hi")
+
+        if audio_data_uri and "base64," in audio_data_uri:
             # Decode base64 audio from Sarvam TTS
-            b64_data = audio_data_uri.split(",", 1)[1]
+            b64_data = audio_data_uri.split("base64,", 1)[1]
             audio_bytes = base64.b64decode(b64_data)
 
-            # Save to a temp file served by our API
-            audio_id = str(uuid.uuid4())[:8]
-            audio_path = f"/tmp/munim_tts_{audio_id}.ogg"
-            with open(audio_path, "wb") as f:
-                f.write(audio_bytes)
+            if len(audio_bytes) > 100:
+                # Save as WAV (Sarvam returns WAV format)
+                audio_id = str(uuid.uuid4())[:8]
+                audio_path = f"/tmp/munim_tts_{audio_id}.wav"
+                with open(audio_path, "wb") as f:
+                    f.write(audio_bytes)
 
-            # Send voice note as a separate WhatsApp message via Twilio
-            # Use the ngrok URL to serve the audio
-            import httpx
-            async with httpx.AsyncClient(timeout=5.0) as client:
+                # Get ngrok URL to serve the audio
+                import httpx
+                ngrok_url = None
                 try:
-                    tunnels_resp = await client.get("http://localhost:4040/api/tunnels")
-                    tunnels = tunnels_resp.json().get("tunnels", [])
-                    ngrok_url = next((t["public_url"] for t in tunnels if "https" in t["public_url"]), None)
+                    async with httpx.AsyncClient(timeout=3.0) as client:
+                        tunnels_resp = await client.get("http://localhost:4040/api/tunnels")
+                        tunnels = tunnels_resp.json().get("tunnels", [])
+                        ngrok_url = next((t["public_url"] for t in tunnels if "https" in t["public_url"]), None)
                 except Exception:
-                    ngrok_url = None
+                    pass
 
-            if ngrok_url:
-                audio_url = f"{ngrok_url}/api/whatsapp/tts/{audio_id}"
-                await send_whatsapp(to=clean_phone, body="🔊 Voice note:", media_url=audio_url)
-                logger.info("Voice note sent: %s", audio_url)
+                if ngrok_url:
+                    audio_url = f"{ngrok_url}/api/whatsapp/tts/{audio_id}"
+                    logger.info("Sending voice note: %s (%d bytes)", audio_url, len(audio_bytes))
+                    await send_whatsapp(to=clean_phone, body="🔊", media_url=audio_url)
+                else:
+                    logger.warning("Ngrok not available, skipping voice note")
+            else:
+                logger.warning("TTS returned empty audio (%d bytes)", len(audio_bytes))
+        else:
+            logger.info("TTS returned no audio (key may be missing or text too long)")
     except Exception as e:
-        logger.warning("TTS voice note failed (text reply still sent): %s", e)
+        logger.warning("TTS voice note failed: %s", e)
 
     # Return TwiML XML response (text reply)
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -299,14 +309,14 @@ async def twilio_webhook(request: Request):
 async def serve_tts_audio(audio_id: str):
     """Serve TTS audio files for WhatsApp voice notes."""
     import os
-    audio_path = f"/tmp/munim_tts_{audio_id}.ogg"
-    if not os.path.exists(audio_path):
-        raise HTTPException(status_code=404, detail="Audio not found")
-
-    with open(audio_path, "rb") as f:
-        audio_bytes = f.read()
-
-    return Response(content=audio_bytes, media_type="audio/ogg")
+    # Try WAV first (Sarvam returns WAV), then OGG
+    for ext, mime in [(".wav", "audio/wav"), (".ogg", "audio/ogg"), (".mp3", "audio/mpeg")]:
+        audio_path = f"/tmp/munim_tts_{audio_id}{ext}"
+        if os.path.exists(audio_path):
+            with open(audio_path, "rb") as f:
+                audio_bytes = f.read()
+            return Response(content=audio_bytes, media_type=mime)
+    raise HTTPException(status_code=404, detail="Audio not found")
 
 
 @router.get("/webhook")

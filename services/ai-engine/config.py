@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     # OpenAI (Whisper STT fallback)
     openai_api_key: str = ""
 
+    # ElevenLabs (Scribe v2 STT)
+    elevenlabs_api_key: str = ""
+
+    # Gemini
+    gemini_api_key: str = ""
+
     # Sarvam AI (TTS)
     sarvam_api_key: str = ""
 

@@ -27,7 +27,25 @@ interface VoiceCommand {
   category: "income" | "expense" | "udhari" | "query" | "reminder";
   amount?: number;
   timestamp: string;
+  sttProvider?: string;
+  segments?: Array<{ start?: number; end?: number; text: string }> | null;
 }
+
+const STT_PROVIDER_LABELS: Record<string, { label: string; color: string }> = {
+  openai_whisper: { label: "OpenAI Whisper", color: "bg-green-100 text-green-700" },
+  elevenlabs: { label: "ElevenLabs Scribe v2", color: "bg-purple-100 text-purple-700" },
+  sarvam: { label: "Sarvam AI", color: "bg-orange-100 text-orange-700" },
+  groq_whisper: { label: "Groq Whisper", color: "bg-blue-100 text-blue-700" },
+  unknown: { label: "Unknown", color: "bg-gray-100 text-gray-500" },
+};
+
+const STT_PROVIDERS = [
+  { value: "auto", label: "Auto (Best Available)" },
+  { value: "openai_whisper", label: "OpenAI Whisper" },
+  { value: "elevenlabs", label: "ElevenLabs Scribe v2" },
+  { value: "sarvam", label: "Sarvam AI" },
+  { value: "groq_whisper", label: "Groq Whisper" },
+];
 
 // ---------- Demo Data ----------
 const INITIAL_COMMANDS: VoiceCommand[] = [
@@ -126,11 +144,15 @@ export default function SoundboxPage() {
   const [soundboxActive, setSoundboxActive] = useState(false);
   const [ledColor, setLedColor] = useState<"green" | "yellow" | "red">("green");
   const [isProcessing, setIsProcessing] = useState(false);
+  const [selectedProvider, setSelectedProvider] = useState("auto");
 
   // Mini P&L state
   const [todayIncome, setTodayIncome] = useState(34500);
   const [todayExpense, setTodayExpense] = useState(17400);
   const todayProfit = todayIncome - todayExpense;
+
+  // Flash notification
+  const [flash, setFlash] = useState<{ text: string; type: "income" | "expense" | "udhari" | "query" | "reminder" } | null>(null);
 
   const handleVoiceResult = useCallback(async (blob: Blob) => {
     setIsProcessing(true);
@@ -139,11 +161,13 @@ export default function SoundboxPage() {
 
     try {
       const formData = new FormData();
-      formData.append("audio", blob, "recording.webm");
+      formData.append("file", blob, "recording.webm");
       formData.append("merchant_id", DEMO_MERCHANT_ID);
       formData.append("language", "hi");
+      formData.append("source", "soundbox");
+      formData.append("stt_provider", selectedProvider);
 
-      const resp = await fetch(`${API_BASE_URL}/api/voice/process`, {
+      const resp = await fetch(`${API_BASE_URL}/api/voice/audio/process`, {
         method: "POST",
         body: formData,
       });
@@ -151,20 +175,25 @@ export default function SoundboxPage() {
       if (!resp.ok) throw new Error("Voice processing failed");
       const data = await resp.json();
 
-      const transcript = data.transcription || data.transcript || "Voice command";
-      const actionText = data.action_summary || data.action || data.response_hindi || data.response || data.reply || "Command processed";
-      const amount = data.amount || data.transaction?.amount;
+      const transcript = data.transcript || "Voice command";
+      const actionText = data.response_text || data.action_summary || "Command processed";
+      const sttProvider = data.stt_provider || "unknown";
+      const segments = data.segments || null;
 
-      // Determine category from response
+      // Extract amount from NLU entities
+      const nluEntities = data.nlu?.entities || {};
+      const amount = nluEntities.amount || data.amount;
+
+      // Determine category from NLU intent
       let category: VoiceCommand["category"] = "query";
-      const intentLower = (data.intent || data.action || "").toLowerCase();
-      if (intentLower.includes("income") || intentLower.includes("received") || intentLower.includes("aaya")) {
+      const intent = (data.nlu?.intent || "").toLowerCase();
+      if (intent.includes("income") || intent.includes("add_income")) {
         category = "income";
-      } else if (intentLower.includes("expense") || intentLower.includes("paid") || intentLower.includes("diya")) {
+      } else if (intent.includes("expense") || intent.includes("add_expense")) {
         category = "expense";
-      } else if (intentLower.includes("udhari") || intentLower.includes("credit")) {
+      } else if (intent.includes("udhari")) {
         category = "udhari";
-      } else if (intentLower.includes("remind")) {
+      } else if (intent.includes("remind")) {
         category = "reminder";
       }
 
@@ -175,11 +204,17 @@ export default function SoundboxPage() {
         category,
         amount: amount ? Number(amount) : undefined,
         timestamp: new Date().toISOString(),
+        sttProvider,
+        segments,
       };
 
       setCommands((prev) => [newCommand, ...prev].slice(0, 10));
-      setSoundboxMessage(actionText.split(":")[0] || actionText);
+      setSoundboxMessage(actionText);
       setLedColor(category === "expense" ? "red" : "green");
+
+      // Flash notification
+      setFlash({ text: actionText, type: category });
+      setTimeout(() => setFlash(null), 4000);
 
       // Update mini P&L
       if (category === "income" && amount) {
@@ -189,8 +224,8 @@ export default function SoundboxPage() {
       }
 
       // Play TTS audio if available
-      if (data.audio_url || data.response_audio_url) {
-        const audio = new Audio(data.audio_url || data.response_audio_url);
+      if (data.response_audio_url) {
+        const audio = new Audio(data.response_audio_url);
         audio.play().catch(() => {});
       }
     } catch {
@@ -205,13 +240,40 @@ export default function SoundboxPage() {
         setLedColor("green");
       }, 3000);
     }
-  }, []);
+  }, [selectedProvider]);
 
   return (
     <div className="flex min-h-dvh flex-col bg-munim-bg">
       <Navbar shopName="Sunita Saree Shop" payScore={74} />
 
-      <main className="flex-1 overflow-y-auto px-4 pt-4 pb-24 space-y-5 max-w-lg mx-auto w-full">
+      {/* Flash Notification */}
+      <AnimatePresence>
+        {flash && (
+          <motion.div
+            initial={{ opacity: 0, y: -60 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -60 }}
+            className={cn(
+              "fixed top-0 left-0 right-0 z-50 px-4 py-3 text-center text-sm font-semibold shadow-lg",
+              flash.type === "income" && "bg-emerald-500 text-white",
+              flash.type === "expense" && "bg-red-500 text-white",
+              flash.type === "udhari" && "bg-blue-500 text-white",
+              flash.type === "reminder" && "bg-violet-500 text-white",
+              flash.type === "query" && "bg-[#00BAF2] text-white",
+            )}
+          >
+            <div className="flex items-center justify-center gap-2 max-w-2xl mx-auto">
+              {flash.type === "income" && <TrendingUp className="w-4 h-4" />}
+              {flash.type === "expense" && <TrendingDown className="w-4 h-4" />}
+              {flash.type === "udhari" && <IndianRupee className="w-4 h-4" />}
+              {flash.type === "query" && <Lightbulb className="w-4 h-4" />}
+              <span>{flash.text}</span>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <main className="flex-1 overflow-y-auto px-4 pt-4 pb-24 space-y-5 max-w-3xl mx-auto w-full">
         {/* Header */}
         <div>
           <h1 className="text-xl font-bold text-munim-primary-dark">
@@ -234,14 +296,65 @@ export default function SoundboxPage() {
           />
         </motion.div>
 
-        {/* Voice Input */}
+        {/* Voice Input + File Upload */}
         <motion.div
           initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.1 }}
-          className="flex flex-col items-center"
+          className="flex flex-col items-center gap-4"
         >
           <VoiceInput onResult={handleVoiceResult} isProcessing={isProcessing} />
+
+          {/* Upload Audio File */}
+          <div className="flex items-center gap-3 w-full max-w-sm">
+            <div className="flex-1 h-px bg-gray-200" />
+            <span className="text-xs text-gray-400">ya audio file upload karein</span>
+            <div className="flex-1 h-px bg-gray-200" />
+          </div>
+
+          <label
+            className={cn(
+              "flex items-center gap-2 px-6 py-3 rounded-xl border-2 border-dashed cursor-pointer transition-all w-full max-w-sm justify-center",
+              isProcessing
+                ? "border-gray-200 bg-gray-50 text-gray-400 cursor-wait"
+                : "border-blue-200 bg-blue-50/50 text-blue-600 hover:bg-blue-50 hover:border-blue-300"
+            )}
+          >
+            <Volume2 className="w-4 h-4" />
+            <span className="text-sm font-medium">Upload Audio File (.wav, .mp3, .ogg, .webm)</span>
+            <input
+              type="file"
+              accept="audio/*"
+              className="hidden"
+              disabled={isProcessing}
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                const blob = new Blob([await file.arrayBuffer()], { type: file.type });
+                handleVoiceResult(blob);
+                e.target.value = "";
+              }}
+            />
+          </label>
+        </motion.div>
+
+        {/* STT Provider Selector */}
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.12 }}
+          className="flex items-center gap-3 w-full max-w-sm mx-auto"
+        >
+          <label className="text-xs font-medium text-gray-500 whitespace-nowrap">STT Provider:</label>
+          <select
+            value={selectedProvider}
+            onChange={(e) => setSelectedProvider(e.target.value)}
+            className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-300"
+          >
+            {STT_PROVIDERS.map((p) => (
+              <option key={p.value} value={p.value}>{p.label}</option>
+            ))}
+          </select>
         </motion.div>
 
         {/* Instructions */}
@@ -350,9 +463,35 @@ export default function SoundboxPage() {
                       <p className="text-sm font-medium text-gray-900 mt-0.5">
                         {cmd.action}
                       </p>
-                      <p className="text-[10px] text-gray-400 mt-0.5">
-                        {formatTime(cmd.timestamp)}
-                      </p>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <p className="text-[10px] text-gray-400">
+                          {formatTime(cmd.timestamp)}
+                        </p>
+                        {cmd.sttProvider && (
+                          <span className={cn(
+                            "text-[9px] font-medium px-1.5 py-0.5 rounded-full",
+                            STT_PROVIDER_LABELS[cmd.sttProvider]?.color || STT_PROVIDER_LABELS.unknown.color,
+                          )}>
+                            {STT_PROVIDER_LABELS[cmd.sttProvider]?.label || cmd.sttProvider}
+                          </span>
+                        )}
+                      </div>
+                      {cmd.segments && cmd.segments.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {cmd.segments.slice(0, 20).map((seg, i) => (
+                            <span
+                              key={i}
+                              title={seg.start != null ? `${seg.start.toFixed(1)}s - ${(seg.end ?? 0).toFixed(1)}s` : undefined}
+                              className="text-[9px] text-gray-500 bg-gray-50 px-1 py-0.5 rounded border border-gray-100"
+                            >
+                              {seg.text}
+                            </span>
+                          ))}
+                          {cmd.segments.length > 20 && (
+                            <span className="text-[9px] text-gray-400">+{cmd.segments.length - 20} more</span>
+                          )}
+                        </div>
+                      )}
                     </div>
                     {cmd.amount && (
                       <span className={cn(

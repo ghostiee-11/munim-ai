@@ -86,6 +86,25 @@ Speak naturally in Hindi at the Paytm Soundbox — MunimAI understands, records,
   <img src="apps/web/public/screenshots/dashboard.png" alt="Dashboard" width="800" style="border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.1);"/>
 </p>
 
+#### Paytm Soundbox Integration
+
+Record voice or upload audio files. Powered by advanced speech recognition with **speaker diarization**, **Hindi audio language models**, and **noise-robust transcription** for real shop environments.
+
+- **Speaker Diarization**: Identifies who is speaking in multi-speaker environments (merchant vs customer)
+- **Hindi Audio Language Model**: Fine-tuned Whisper large-v3 optimized for Hindi/Hinglish/Indian English
+- **Noise Suppression**: Works in noisy shop environments with echo cancellation
+- **Code-Switch Handling**: Seamlessly handles Hindi-English mixed speech ("5000 Rs rent diya")
+- **Numeral Parsing**: "dedh lakh" -> 1,50,000 | "paanch sau" -> 500
+
+<p align="center">
+  <img src="apps/web/public/screenshots/soundbox.png" alt="Soundbox Simulator" width="400" style="border-radius: 12px; margin-right: 16px;"/>
+  <img src="apps/web/public/screenshots/soundbox-history.png" alt="Voice Command History" width="400" style="border-radius: 12px;"/>
+</p>
+
+> **Left**: Soundbox simulator with mic recording, audio file upload, and language model selector
+>
+> **Right**: Voice command history with Live P&L - income (green), expense (red), udhari (blue), queries (yellow)
+
 ---
 
 ### 📋 Smart Udhari Collection
