@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+.env.local
+.venv/
+venv/
+*.egg-info/
+models/exported/*.onnx.data
+models/exported/*.safetensors
+models/exported/tokenizer.json
+.git/
+tests/
+notebooks/
+*.log
