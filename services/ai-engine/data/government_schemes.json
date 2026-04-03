@@ -1,0 +1,112 @@
+{
+  "schemes": [
+    {
+      "code": "MUDRA_SHISHU",
+      "name": "MUDRA Shishu Loan",
+      "full_name": "Pradhan Mantri MUDRA Yojana - Shishu",
+      "description": "Collateral-free loans up to Rs 50,000 for micro enterprises under PMMY. No processing fee. Flexible repayment up to 5 years.",
+      "max_amount": 50000,
+      "interest_rate": 8.5,
+      "eligibility": {
+        "business_age_months": 0,
+        "min_turnover": 0,
+        "max_turnover": 5000000,
+        "business_types": ["all"],
+        "requires_collateral": false,
+        "requires_cibil": false
+      },
+      "benefits": ["No collateral", "No processing fee", "Flexible repayment", "Available at all banks"],
+      "application_url": "https://www.mudra.org.in/",
+      "documents_required": ["Aadhaar", "PAN", "Business address proof", "Bank statement 6 months"]
+    },
+    {
+      "code": "MUDRA_KISHORE",
+      "name": "MUDRA Kishore Loan",
+      "full_name": "Pradhan Mantri MUDRA Yojana - Kishore",
+      "description": "Loans from Rs 50,001 to Rs 5 lakh for growing micro enterprises. Collateral-free with government guarantee.",
+      "max_amount": 500000,
+      "interest_rate": 10.0,
+      "eligibility": {
+        "business_age_months": 12,
+        "min_turnover": 100000,
+        "max_turnover": 10000000,
+        "business_types": ["all"],
+        "requires_collateral": false,
+        "requires_cibil": false
+      },
+      "benefits": ["Up to Rs 5 lakh", "No collateral", "Government guarantee"],
+      "application_url": "https://www.mudra.org.in/",
+      "documents_required": ["Aadhaar", "PAN", "Business plan", "Bank statement 12 months", "ITR last 2 years"]
+    },
+    {
+      "code": "PMEGP",
+      "name": "PMEGP",
+      "full_name": "Prime Minister's Employment Generation Programme",
+      "description": "Subsidy of 15-35% on project cost for new micro enterprises. Maximum project cost Rs 25 lakh for manufacturing, Rs 10 lakh for service sector.",
+      "max_amount": 1000000,
+      "interest_rate": 11.0,
+      "eligibility": {
+        "business_age_months": 0,
+        "min_turnover": 0,
+        "max_turnover": 2500000,
+        "business_types": ["manufacturing", "service"],
+        "requires_collateral": false,
+        "min_age": 18,
+        "min_education": "8th_pass"
+      },
+      "benefits": ["15-35% subsidy", "No collateral for CGTMSE covered loans", "Training support"],
+      "application_url": "https://www.kviconline.gov.in/pmegpeportal/",
+      "documents_required": ["Aadhaar", "PAN", "Project report", "Educational certificate", "Caste certificate if applicable"]
+    },
+    {
+      "code": "CGTMSE",
+      "name": "CGTMSE Guarantee",
+      "full_name": "Credit Guarantee Fund Trust for Micro and Small Enterprises",
+      "description": "Government guarantees up to 85% of collateral-free loans up to Rs 5 crore for MSEs. Banks cannot ask for collateral for CGTMSE-covered loans.",
+      "max_amount": 50000000,
+      "interest_rate": 12.0,
+      "eligibility": {
+        "business_age_months": 6,
+        "min_turnover": 0,
+        "max_turnover": 500000000,
+        "business_types": ["manufacturing", "service", "retail"],
+        "requires_collateral": false
+      },
+      "benefits": ["85% government guarantee", "No collateral required", "Up to Rs 5 crore"],
+      "application_url": "https://www.cgtmse.in/",
+      "documents_required": ["Business registration", "Bank statement", "ITR", "GST returns"]
+    },
+    {
+      "code": "STANDUP_INDIA",
+      "name": "Stand-Up India",
+      "full_name": "Stand-Up India Scheme",
+      "description": "Loans between Rs 10 lakh to Rs 1 crore for SC/ST and women entrepreneurs for greenfield enterprises in manufacturing, services, or trading.",
+      "max_amount": 10000000,
+      "interest_rate": 9.0,
+      "eligibility": {
+        "business_age_months": 0,
+        "min_turnover": 0,
+        "business_types": ["manufacturing", "service", "trading"],
+        "gender": ["female"],
+        "category": ["SC", "ST", "female"]
+      },
+      "benefits": ["Subsidized interest", "Margin money 25%", "Working capital included"],
+      "application_url": "https://www.standupmitra.in/",
+      "documents_required": ["Aadhaar", "PAN", "Category certificate", "Project report"]
+    },
+    {
+      "code": "MSME_SAMPARK",
+      "name": "MSME Sampark",
+      "full_name": "MSME Sampark Portal",
+      "description": "Free job portal for MSMEs to find skilled workers and for workers to find MSME jobs. Reduces hiring costs for small businesses.",
+      "max_amount": 0,
+      "interest_rate": 0,
+      "eligibility": {
+        "business_types": ["all"],
+        "requires_udyam": true
+      },
+      "benefits": ["Free hiring platform", "Skilled worker database", "Government verified"],
+      "application_url": "https://msmesampark.in/"
+    }
+  ]
+}

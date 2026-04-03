@@ -1,0 +1,64 @@
+{
+  "tones": {
+    "friendly_reminder": {
+      "level": 0,
+      "description": "First gentle reminder, very casual",
+      "templates": [
+        "Namaste {debtor_name}, {merchant_name} ki taraf se yaad dila raha hoon ki Rs {amount} baaki hai. Jab convenient ho, ye link se bhej dijiye: {payment_link} 🙏",
+        "{debtor_name}, aapka Rs {amount} pending hai {merchant_name} ki shop pe. Koi jaldi nahi, jab ho sake tab bhej dena: {payment_link}",
+        "Namaste {debtor_name}! Bas ek chhoti si yaad — Rs {amount} baaki hai. Ye link se turant bhej sakte hain: {payment_link} 😊"
+      ],
+      "best_time": "morning_9am",
+      "day_preference": "weekday"
+    },
+    "polite_follow_up": {
+      "level": 1,
+      "description": "Second reminder, still polite but more direct",
+      "templates": [
+        "{debtor_name}, pichli baar yaad dilaya tha — Rs {amount} abhi bhi pending hai. Agar convenient ho toh aaj hi bhej dijiye: {payment_link}",
+        "Namaste {debtor_name}, Rs {amount} ka payment {days_overdue} din se pending hai. Request hai ki jaldi se jaldi settle kar dijiye: {payment_link}",
+        "{debtor_name}, aapke account mein Rs {amount} pending hai. Ye Paytm link se ek minute mein bhej sakte hain: {payment_link}"
+      ],
+      "best_time": "afternoon_2pm",
+      "day_preference": "any"
+    },
+    "firm_request": {
+      "level": 2,
+      "description": "Firm but respectful, mentions duration",
+      "templates": [
+        "{debtor_name}, Rs {amount} ka payment {days_overdue} din se pending hai. Kripya jaldi bhejiye. Link: {payment_link}",
+        "{debtor_name}, aapka Rs {amount} kaafi time se baaki hai. Aaj settle karna possible hai? Link: {payment_link}",
+        "Namaste {debtor_name}, Rs {amount} ki pending payment ke baare mein baat karni thi. {days_overdue} din ho gaye. Please ye link use karein: {payment_link}"
+      ],
+      "best_time": "evening_7pm",
+      "day_preference": "any"
+    },
+    "urgent_notice": {
+      "level": 3,
+      "description": "Urgent, mentions consequences without threatening",
+      "templates": [
+        "{debtor_name}, ye important message hai — Rs {amount} bahut time se pending hai ({days_overdue} din). Aaj settle karna zaroori hai. Link: {payment_link}",
+        "{debtor_name}, Rs {amount} ka payment abhi tak nahi aaya. {merchant_name} ko ye amount ki zaroorat hai. Please aaj hi bhejiye: {payment_link}",
+        "Namaste {debtor_name}, Rs {amount} ka final reminder hai. Agar koi issue hai toh bataiye, warna aaj settle kar dijiye: {payment_link}"
+      ],
+      "best_time": "morning_9am",
+      "day_preference": "weekday"
+    },
+    "escalation_notice": {
+      "level": 4,
+      "description": "Final notice, merchant involvement mentioned",
+      "templates": [
+        "{debtor_name}, Rs {amount} ke baare mein kai baar yaad dilaya. Ab {merchant_owner} ji ko directly baat karni padegi. Agar abhi settle karna chahein: {payment_link}",
+        "{debtor_name}, ye last reminder hai Rs {amount} ke liye. {days_overdue} din ho gaye. {merchant_owner} ji aapse personally baat karenge agar settle nahi hua. Link: {payment_link}"
+      ],
+      "best_time": "morning_9am",
+      "day_preference": "weekday"
+    }
+  },
+  "winback_templates": [
+    "{customer_name}, bahut din ho gaye aapko dekhe nahi! {merchant_name} mein nayi collection aayi hai. Aapke liye special {discount}% discount 🎉 Aayiye na!",
+    "Namaste {customer_name}! {merchant_name} mein aapke liye kuch special rakha hai. {discount}% off sirf aapke liye, {validity} tak. Zaroor aayiye!",
+    "{customer_name}, aapki kami mehsoos ho rahi hai {merchant_name} mein! Ek baar aayiye, {discount}% discount aapka wait kar raha hai 😊"
+  ],
+  "morning_briefing_template": "Namaste {owner_name}! {greeting}\n\nKal ka hisaab:\n📈 Sale: Rs {yesterday_income} ({income_change})\n📉 Kharcha: Rs {yesterday_expense}\n💰 Munafa: Rs {yesterday_profit} ({margin}% margin)\n\nAaj ke alerts:\n{alerts}\n\nPayScore: {payscore} {payscore_change}\n\nReply karein ya voice note bhejein! 🎤"
+}

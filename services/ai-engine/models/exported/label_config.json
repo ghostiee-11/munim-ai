@@ -1,0 +1,37 @@
+{
+  "label2id": {
+    "CASH_RECEIVED": 0,
+    "COMMAND_GST": 1,
+    "COMMAND_REMIND": 2,
+    "EXPENSE_LOG": 3,
+    "GENERAL": 4,
+    "PAYMENT_TAG": 5,
+    "QUERY_CUSTOMER": 6,
+    "QUERY_EXPENSE": 7,
+    "QUERY_PROFIT": 8,
+    "QUERY_SUMMARY": 9,
+    "UDHARI_CREATE": 10,
+    "UDHARI_SETTLE": 11
+  },
+  "id2label": {
+    "0": "CASH_RECEIVED",
+    "1": "COMMAND_GST",
+    "2": "COMMAND_REMIND",
+    "3": "EXPENSE_LOG",
+    "4": "GENERAL",
+    "5": "PAYMENT_TAG",
+    "6": "QUERY_CUSTOMER",
+    "7": "QUERY_EXPENSE",
+    "8": "QUERY_PROFIT",
+    "9": "QUERY_SUMMARY",
+    "10": "UDHARI_CREATE",
+    "11": "UDHARI_SETTLE"
+  },
+  "num_labels": 12,
+  "model_name": "ai4bharat/IndicBERTv2-MLM-only",
+  "max_length": 64,
+  "metrics": {
+    "weighted_f1": 0.9619923935713408,
+    "macro_f1": 0.9713716108452952
+  }
+}

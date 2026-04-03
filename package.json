@@ -1,0 +1,23 @@
+{
+  "name": "munim-ai",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "services/*"
+  ],
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "dev:web": "cd apps/web && npm run dev",
+    "dev:api": "cd services/ai-engine && python main.py",
+    "db:seed": "cd services/ai-engine && python -m data.seed_merchant"
+  },
+  "devDependencies": {
+    "turbo": "^2.0.0"
+  },
+  "dependencies": {
+    "playwright": "^1.59.1"
+  }
+}

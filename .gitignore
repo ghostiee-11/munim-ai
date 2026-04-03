@@ -1,0 +1,55 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Build
+.next/
+dist/
+.turbo/
+*.egg-info/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# ML models
+*.onnx
+*.pt
+*.pth
+*.pkl
+models/*.bin
+
+# Data
+data/synthetic_data.json
+*.csv
+
+# Logs
+*.log
+
+# Temp & screenshots taken during dev
+/tmp/
+*.tmp
+.playwright-mcp/
+
+# OS files
+Thumbs.db
+
+# Test files at root
+test-pages.mjs
+
+# Large ML model files
+*.onnx.data
+*.safetensors
+*.onnx
+models/exported/
