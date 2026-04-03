@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     # API
     api_host: str = "0.0.0.0"
     api_port: int = 8000
-    cors_origins: list[str] = ["http://localhost:3000", "https://*.vercel.app"]
+    cors_origins: list[str] = ["http://localhost:3000", "https://*.vercel.app", "https://*.onrender.com", "*"]
 
     # Groq
     groq_api_key: str = ""
