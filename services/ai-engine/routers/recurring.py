@@ -153,6 +153,22 @@ def _advance_due_date(current_due: str, frequency: str) -> str:
 # Routes
 # ---------------------------------------------------------------------------
 
+@router.get("/{merchant_id}/check-due")
+async def check_due_payments(merchant_id: str):
+    """Check if any recurring payments are due and need approval."""
+    today = date.today().isoformat()
+
+    # Get all active recurring payments
+    payments = await list_recurring(merchant_id)
+    due_payments = []
+
+    for p in payments:
+        if p.get("is_active") and p.get("next_due", "") <= today:
+            due_payments.append(p)
+
+    return {"due_count": len(due_payments), "payments": due_payments}
+
+
 @router.post("/", response_model=RecurringResponse, status_code=201)
 async def create_recurring(body: RecurringCreate):
     """Create a new recurring payment schedule."""

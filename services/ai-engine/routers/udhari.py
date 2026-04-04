@@ -305,19 +305,32 @@ async def get_ranked_udharis(merchant_id: str):
             except (ValueError, TypeError):
                 pass
 
-        reminder_count = u.get("reminder_count", 0)
+        reminder_count = u.get("reminder_count", 0) or 0
 
-        # Risk score: weighted combination
-        risk_score = (
-            min(days_old, 90) * 2.0          # Days overdue (capped at 90)
-            + min(remaining, 50000) / 100.0    # Amount factor
-            + reminder_count * 5.0             # Unresponsive to reminders
-            + (20 if status == "overdue" else 0)  # Status penalty
-        )
+        # Risk score (0-100): multi-factor scoring
+        # Factor 1: Days old (max 40 points)
+        days_score = min(40, days_old * 1.5)
+
+        # Factor 2: Outstanding amount (max 30 points)
+        amount_score = min(30, (remaining / 1000) * 3)
+
+        # Factor 3: Reminder unresponsiveness (max 20 points)
+        reminder_score = min(20, reminder_count * 7)
+
+        # Factor 4: Debtor history -- has this person settled before?
+        debtor_name = u.get("debtor_name", "")
+        past_settled = len([
+            prev for prev in all_udharis
+            if prev.get("debtor_name") == debtor_name and prev.get("status") == "settled"
+        ])
+        history_bonus = -10 if past_settled > 0 else 10  # Good history = lower risk
+
+        risk_score = days_score + amount_score + reminder_score + history_bonus
+        risk_score = max(0, min(100, round(risk_score)))
 
         scored.append({
             **u,
-            "risk_score": round(risk_score, 1),
+            "risk_score": risk_score,
             "days_old": days_old,
             "remaining": remaining,
         })
