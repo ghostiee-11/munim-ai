@@ -66,16 +66,17 @@ async def get_dashboard(merchant_id: str):
         except Exception:
             today_txns = []
 
-    # If still empty, use all transactions from this month as "today" for demo
+    # If still empty, use last 24 hours as fallback
     if not today_txns:
+        yesterday_str = (now_ist - td(hours=24)).strftime("%Y-%m-%dT%H:%M:%S")
         try:
             today_txns = db.select_range(
                 "transactions",
                 filters={"merchant_id": merchant_id},
-                gte=("created_at", month_start),
+                gte=("created_at", yesterday_str),
             )
         except Exception:
-            today_txns = db.select("transactions", filters={"merchant_id": merchant_id})
+            today_txns = []
 
     try:
         month_txns = db.select_range(
