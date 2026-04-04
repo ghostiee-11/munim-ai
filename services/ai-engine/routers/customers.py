@@ -17,20 +17,50 @@ router = APIRouter()
 
 
 def _assign_segment(total_spent: float, txn_count: int, days_since_last: int) -> str:
-    """Assign RFM segment based on transaction data."""
-    if days_since_last > 60:
-        return "churned"
-    if days_since_last > 30 and txn_count > 0:
-        return "at_risk"
-    if total_spent > 20000 and txn_count > 10:
+    """
+    Assign RFM (Recency-Frequency-Monetary) segment using scored dimensions.
+
+    Each dimension is scored 1-5, then averaged to pick a segment.
+    """
+    # Recency score (1-5): fewer days since last visit = higher
+    r = (
+        5 if days_since_last <= 7
+        else 4 if days_since_last <= 14
+        else 3 if days_since_last <= 30
+        else 2 if days_since_last <= 60
+        else 1
+    )
+
+    # Frequency score (1-5): more transactions = higher
+    f = (
+        5 if txn_count >= 20
+        else 4 if txn_count >= 10
+        else 3 if txn_count >= 5
+        else 2 if txn_count >= 2
+        else 1
+    )
+
+    # Monetary score (1-5): more spent = higher
+    m = (
+        5 if total_spent >= 30000
+        else 4 if total_spent >= 15000
+        else 3 if total_spent >= 5000
+        else 2 if total_spent >= 1000
+        else 1
+    )
+
+    avg = (r + f + m) / 3
+    if avg >= 4:
         return "champion"
-    if total_spent > 10000 and txn_count > 5:
+    if avg >= 3.3:
         return "loyal"
-    if total_spent > 5000 or txn_count > 3:
+    if avg >= 2.5:
         return "promising"
-    if txn_count > 0:
-        return "promising"
-    return "at_risk"
+    if r <= 2 and f >= 3:
+        return "at_risk"
+    if r <= 2:
+        return "churned"
+    return "promising"
 
 
 def _churn_probability(days_since_last: int) -> float:

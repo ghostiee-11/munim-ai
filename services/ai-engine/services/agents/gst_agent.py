@@ -538,24 +538,110 @@ def _gst_recommendations(status: str, days_remaining: int) -> list[str]:
 
 async def auto_classify_transaction(transaction: dict) -> dict:
     """Lightweight HSN/SAC classification for a single transaction.
-    Called automatically when any transaction is created via voice."""
+    Called automatically when any transaction is created via voice.
+    Supports 50+ common Indian retail categories with case-insensitive
+    partial matching."""
     category = transaction.get("category", "")
+    description = transaction.get("description", "")
     amount = transaction.get("amount", 0)
 
-    # Rule-based quick classification
+    # Expanded rule-based HSN classification covering common Indian retail categories
     HSN_MAP = {
+        # Textiles (5%)
         "saree": {"hsn": "5007", "rate": 5},
+        "sari": {"hsn": "5007", "rate": 5},
+        "silk": {"hsn": "5007", "rate": 5},
+        "cotton": {"hsn": "5208", "rate": 5},
         "textile": {"hsn": "5007", "rate": 5},
+        "dupatta": {"hsn": "6214", "rate": 5},
+        "lehenga": {"hsn": "6204", "rate": 5},
+        "suit": {"hsn": "6204", "rate": 5},
+        "blouse": {"hsn": "6206", "rate": 5},
+        "fabric": {"hsn": "5407", "rate": 5},
+        "kapda": {"hsn": "5208", "rate": 5},
+        "resham": {"hsn": "5007", "rate": 5},
+        "shawl": {"hsn": "6214", "rate": 5},
+        "kurta": {"hsn": "6204", "rate": 5},
+        "garment": {"hsn": "6204", "rate": 5},
+        # Food (0-5%)
         "food": {"hsn": "2106", "rate": 5},
         "grocery": {"hsn": "0904", "rate": 5},
+        "tea": {"hsn": "0902", "rate": 5},
+        "chai": {"hsn": "0902", "rate": 5},
+        "snacks": {"hsn": "1905", "rate": 12},
+        "sweets": {"hsn": "1704", "rate": 5},
+        "mithai": {"hsn": "1704", "rate": 5},
+        "rice": {"hsn": "1006", "rate": 0},
+        "chawal": {"hsn": "1006", "rate": 0},
+        "atta": {"hsn": "1101", "rate": 0},
+        "milk": {"hsn": "0402", "rate": 0},
+        "doodh": {"hsn": "0402", "rate": 0},
+        "oil": {"hsn": "1507", "rate": 5},
+        "tel": {"hsn": "1507", "rate": 5},
+        # Services (18%)
         "rent": {"hsn": "9972", "rate": 18},
+        "kiraya": {"hsn": "9972", "rate": 18},
         "electricity": {"hsn": "2716", "rate": 18},
+        "bijli": {"hsn": "2716", "rate": 18},
+        "utility": {"hsn": "9969", "rate": 18},
+        "maintenance": {"hsn": "9987", "rate": 18},
+        "transport": {"hsn": "9965", "rate": 5},
+        "delivery": {"hsn": "9965", "rate": 5},
+        "courier": {"hsn": "9965", "rate": 18},
+        "packaging": {"hsn": "4819", "rate": 18},
+        "supplies": {"hsn": "3926", "rate": 18},
+        # Electronics (18%)
+        "electronics": {"hsn": "8471", "rate": 18},
+        "mobile": {"hsn": "8517", "rate": 12},
+        "phone": {"hsn": "8517", "rate": 12},
+        "computer": {"hsn": "8471", "rate": 18},
+        # Jewelry (3%)
+        "gold": {"hsn": "7113", "rate": 3},
+        "silver": {"hsn": "7114", "rate": 3},
+        "jewelry": {"hsn": "7117", "rate": 3},
+        "jewellery": {"hsn": "7117", "rate": 3},
+        # Hardware (18%)
+        "hardware": {"hsn": "7318", "rate": 18},
+        "tools": {"hsn": "8205", "rate": 18},
+        "paint": {"hsn": "3210", "rate": 28},
+        # Pharmacy (12%)
+        "medicine": {"hsn": "3004", "rate": 12},
+        "pharmacy": {"hsn": "3004", "rate": 12},
+        "dawai": {"hsn": "3004", "rate": 12},
+        # Salary (0%)
         "salary": {"hsn": "9985", "rate": 0},
+        "wages": {"hsn": "9985", "rate": 0},
+        "tankhah": {"hsn": "9985", "rate": 0},
+        # Stock/Inventory
         "stock": {"hsn": "9801", "rate": 12},
+        "inventory": {"hsn": "9801", "rate": 12},
+        # General (18%)
         "general": {"hsn": "9988", "rate": 18},
+        "commission": {"hsn": "9985", "rate": 18},
+        "service": {"hsn": "9983", "rate": 18},
+        "repair": {"hsn": "9987", "rate": 18},
+        "miscellaneous": {"hsn": "9988", "rate": 18},
     }
 
-    match = HSN_MAP.get(category.lower(), HSN_MAP["general"])
+    # Case-insensitive lookup: try exact match first, then partial match
+    combined_text = f"{category} {description}".lower().strip()
+    match = None
+
+    # Exact match on category
+    cat_lower = category.lower().strip()
+    if cat_lower in HSN_MAP:
+        match = HSN_MAP[cat_lower]
+
+    # Partial match: check if any HSN_MAP key appears in the combined text
+    if match is None:
+        for keyword, hsn_entry in HSN_MAP.items():
+            if keyword in combined_text:
+                match = hsn_entry
+                break
+
+    if match is None:
+        match = HSN_MAP["general"]
+
     return {
         "hsn_code": match["hsn"],
         "gst_rate": match["rate"],
