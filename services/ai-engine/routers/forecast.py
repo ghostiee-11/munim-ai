@@ -48,6 +48,25 @@ INDIAN_FESTIVALS = [
     {"date": "2027-03-14", "name": "Holi", "name_hi": "होली", "impact_pct": 60, "category": "shopping"},
 ]
 
+# Festival-specific inventory suggestions
+FESTIVAL_INVENTORY: dict[str, list[str]] = {
+    "Ram Navami": ["Puja items", "Yellow/orange sarees", "Pooja thali sets"],
+    "Akshaya Tritiya": ["Gold jewelry", "Wedding sarees", "Gift sets"],
+    "Raksha Bandhan": ["Rakhi sets", "Gift packs", "Sweets packaging"],
+    "Navratri Start": ["Chaniya choli", "Navratri special items", "Garba accessories"],
+    "Diwali": ["Festive sarees", "Home decor", "Gift hampers", "Diyas"],
+    "Dussehra": ["Festive wear", "Puja items"],
+    "Eid ul-Fitr": ["Festive kurtas", "Embroidered fabric", "Gift items"],
+    "Holi": ["White clothes", "Color-safe fabric", "Festive wear"],
+    "Ganesh Chaturthi": ["Ganesh idols", "Puja items", "Modak packaging"],
+    "Dhanteras": ["Gold jewelry", "Utensils", "Electronics"],
+    "Bhai Dooj": ["Gift sets", "Sweets packaging", "Tikka items"],
+    "Janmashtami": ["Puja items", "Makhan-mishri sets", "Krishna decor"],
+    "Baisakhi": ["Festive wear", "Seasonal items", "Harvest decor"],
+    "Christmas": ["Gift items", "Decorations", "Party supplies"],
+    "Makar Sankranti": ["Kite supplies", "Til-gur items", "Festive wear"],
+}
+
 # Pre-build a lookup: date_str -> list of festivals on that date
 _FESTIVAL_LOOKUP: dict[str, list[dict]] = {}
 for _f in INDIAN_FESTIVALS:
@@ -78,6 +97,11 @@ def _simple_forecast(
         (total_income, total_expense, daily_forecast, upcoming_festivals,
          cash_crunch_days, recommendations)
     """
+    # Build day-of-week pattern multipliers from real data
+    # dow_income[weekday] = list of daily income totals for that weekday
+    dow_income: dict[int, list[float]] = {i: [] for i in range(7)}
+    dow_expense: dict[int, list[float]] = {i: [] for i in range(7)}
+
     if not txns:
         # Fallback: use reasonable defaults for a small Indian merchant
         avg_income = 28000.0
@@ -99,6 +123,34 @@ def _simple_forecast(
         avg_income = sum(daily_income.values()) / num_days
         avg_expense = sum(daily_expense.values()) / num_days
 
+        # Build day-of-week patterns from actual transaction dates
+        for d_str_hist, inc_val in daily_income.items():
+            try:
+                dow = date.fromisoformat(d_str_hist).weekday()
+                dow_income[dow].append(inc_val)
+            except (ValueError, TypeError):
+                pass
+        for d_str_hist, exp_val in daily_expense.items():
+            try:
+                dow = date.fromisoformat(d_str_hist).weekday()
+                dow_expense[dow].append(exp_val)
+            except (ValueError, TypeError):
+                pass
+
+    # Compute day-of-week multipliers relative to the global average
+    dow_inc_mult: dict[int, float] = {}
+    dow_exp_mult: dict[int, float] = {}
+    for wd in range(7):
+        if dow_income[wd] and avg_income > 0:
+            dow_inc_mult[wd] = (sum(dow_income[wd]) / len(dow_income[wd])) / avg_income
+        else:
+            # Sensible defaults: Sunday=0.8, Saturday=1.1, weekdays=1.0
+            dow_inc_mult[wd] = 0.80 if wd == 6 else 1.10 if wd == 5 else 1.0
+        if dow_expense[wd] and avg_expense > 0:
+            dow_exp_mult[wd] = (sum(dow_expense[wd]) / len(dow_expense[wd])) / avg_expense
+        else:
+            dow_exp_mult[wd] = 0.85 if wd == 6 else 1.0
+
     today = date.today()
     daily_forecast: list[dict] = []
     total_income = 0.0
@@ -112,16 +164,9 @@ def _simple_forecast(
         d_str = forecast_date.isoformat()
         weekday = forecast_date.weekday()  # 0=Mon, 6=Sun
 
-        # Base income with slight daily variation
-        day_income = avg_income
-        day_expense = avg_expense
-
-        # Weekend effect: Sunday slightly lower
-        if weekday == 6:
-            day_income *= 0.80
-            day_expense *= 0.85
-        elif weekday == 5:  # Saturday: slightly higher
-            day_income *= 1.10
+        # Apply day-of-week multiplier from real data patterns
+        day_income = avg_income * dow_inc_mult.get(weekday, 1.0)
+        day_expense = avg_expense * dow_exp_mult.get(weekday, 1.0)
 
         # Festival impact
         festivals_today = _get_festivals_for_date(d_str)
@@ -240,39 +285,47 @@ async def get_forecast(
     Uses historical transaction data to project income, expense, and profit.
     Applies Indian festival calendar impact and weekend effects.
     """
-    days_map = {"7d": 7, "30d": 30, "90d": 90}
-    days = days_map.get(period, 90)
+    try:
+        days_map = {"7d": 7, "30d": 30, "90d": 90}
+        days = days_map.get(period, 90)
 
-    # Use last 90 days of data as training window
-    lookback_start = (date.today() - timedelta(days=90)).isoformat()
-    txns = db.select_range(
-        "transactions",
-        filters={"merchant_id": merchant_id},
-        gte=("recorded_at", lookback_start),
-    )
+        # Use last 90 days of data as training window
+        lookback_start = (date.today() - timedelta(days=90)).isoformat()
+        txns = db.select_range(
+            "transactions",
+            filters={"merchant_id": merchant_id},
+            gte=("recorded_at", lookback_start),
+        )
 
-    pred_income, pred_expense, daily, upcoming_festivals, cash_crunch_days, recommendations = (
-        _simple_forecast(txns, days)
-    )
-    pred_profit = round(pred_income - pred_expense, 2)
+        pred_income, pred_expense, daily, upcoming_festivals, cash_crunch_days, recommendations = (
+            _simple_forecast(txns, days)
+        )
+        pred_profit = round(pred_income - pred_expense, 2)
 
-    # Confidence is higher when we have more data
-    data_days = len(set(str(t.get("recorded_at", ""))[:10] for t in txns))
-    confidence = min(0.95, max(0.3, data_days / 90))
+        # Add inventory suggestions to each upcoming festival
+        for fest in upcoming_festivals:
+            fest["inventory_suggestions"] = FESTIVAL_INVENTORY.get(fest["name"], [])
 
-    return ForecastResponse(
-        merchant_id=merchant_id,
-        period=period,
-        predicted_income=pred_income,
-        predicted_expense=pred_expense,
-        predicted_profit=pred_profit,
-        confidence=round(confidence, 2),
-        daily_forecast=daily,
-        upcoming_festivals=upcoming_festivals,
-        cash_crunch_days=cash_crunch_days,
-        recommendations=recommendations,
-        model_version="v2-festival-aware",
-    )
+        # Confidence is higher when we have more data
+        data_days = len(set(str(t.get("recorded_at", ""))[:10] for t in txns))
+        confidence = min(0.95, max(0.3, data_days / 90))
+
+        return ForecastResponse(
+            merchant_id=merchant_id,
+            period=period,
+            predicted_income=pred_income,
+            predicted_expense=pred_expense,
+            predicted_profit=pred_profit,
+            confidence=round(confidence, 2),
+            daily_forecast=daily,
+            upcoming_festivals=upcoming_festivals,
+            cash_crunch_days=cash_crunch_days,
+            recommendations=recommendations,
+            model_version="v2-festival-aware",
+        )
+    except Exception as e:
+        logger.exception(f"Error in forecast: {e}")
+        return {"error": True, "message": "Kuch gadbad ho gayi. Kripya dobara try karein.", "detail": str(e)}
 
 
 @router.get("/{merchant_id}/festivals")
@@ -324,6 +377,7 @@ async def get_festival_calendar(merchant_id: str):
                 "days_until": days_until,
                 "expected_boost": expected_boost,
                 "preparation_tip_hi": tip_text,
+                "inventory_suggestions": FESTIVAL_INVENTORY.get(fest["name"], []),
             })
 
     return {

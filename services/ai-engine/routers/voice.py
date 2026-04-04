@@ -238,7 +238,8 @@ async def process_voice(
         # Conversational: use Groq LLM for a natural Hindi response
         import httpx as _httpx
         try:
-            today_txns = db.select("transactions", filters={"merchant_id": merchant_id})
+            from models.db import select as _db_select
+            today_txns = _db_select("transactions", filters={"merchant_id": merchant_id})
             inc = sum(t.get("amount", 0) for t in today_txns if t.get("type") == "income")
             exp = sum(t.get("amount", 0) for t in today_txns if t.get("type") == "expense")
             ctx = f"Income: Rs {inc:,.0f}, Expense: Rs {exp:,.0f}, Profit: Rs {inc-exp:,.0f}"
@@ -486,7 +487,8 @@ async def process_text(req: VoiceTextRequest):
         # Use Groq LLM for conversational response
         import httpx as _httpx
         try:
-            txns = db.select("transactions", filters={"merchant_id": req.merchant_id})
+            from models.db import select as _db_select
+            txns = _db_select("transactions", filters={"merchant_id": req.merchant_id})
             inc = sum(t.get("amount", 0) for t in txns if t.get("type") == "income")
             exp = sum(t.get("amount", 0) for t in txns if t.get("type") == "expense")
             ctx = f"Income: Rs {inc:,.0f}, Expense: Rs {exp:,.0f}, Profit: Rs {inc-exp:,.0f}"
@@ -574,7 +576,8 @@ async def process_audio_multi(
         import httpx
         try:
             # Get merchant context
-            today_txns = db.select("transactions", filters={"merchant_id": merchant_id})
+            from models.db import select as _db_select
+            today_txns = _db_select("transactions", filters={"merchant_id": merchant_id})
             total_income = sum(t.get("amount", 0) for t in today_txns if t.get("type") == "income")
             total_expense = sum(t.get("amount", 0) for t in today_txns if t.get("type") == "expense")
             context = f"Income: Rs {total_income:,.0f}, Expense: Rs {total_expense:,.0f}, Profit: Rs {total_income - total_expense:,.0f}"
