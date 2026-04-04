@@ -36,125 +36,129 @@ async def get_dashboard(merchant_id: str):
     recent transactions, and active alerts.  Designed to be called once on
     page load; incremental updates come via Socket.IO.
     """
-    # Use IST timezone for India (UTC+5:30)
-    from datetime import timezone, timedelta as td
-    ist = timezone(td(hours=5, minutes=30))
-    now_ist = datetime.now(ist)
-    today_str = now_ist.strftime("%Y-%m-%d")
-    month_start = now_ist.replace(day=1).strftime("%Y-%m-%d")
-
-    # Fetch data - try recorded_at first, fallback to created_at
     try:
-        today_txns = db.select_range(
-            "transactions",
-            filters={"merchant_id": merchant_id},
-            gte=("recorded_at", today_str),
-            lte=("recorded_at", today_str + "T23:59:59+05:30"),
-        )
-    except Exception:
-        today_txns = []
+        # Use IST timezone for India (UTC+5:30)
+        from datetime import timezone, timedelta as td
+        ist = timezone(td(hours=5, minutes=30))
+        now_ist = datetime.now(ist)
+        today_str = now_ist.strftime("%Y-%m-%d")
+        month_start = now_ist.replace(day=1).strftime("%Y-%m-%d")
 
-    # If no today transactions found, try created_at
-    if not today_txns:
+        # Fetch data - try recorded_at first, fallback to created_at
         try:
             today_txns = db.select_range(
                 "transactions",
                 filters={"merchant_id": merchant_id},
-                gte=("created_at", today_str),
-                lte=("created_at", today_str + "T23:59:59+05:30"),
+                gte=("recorded_at", today_str),
+                lte=("recorded_at", today_str + "T23:59:59+05:30"),
             )
         except Exception:
             today_txns = []
 
-    # If still empty, use last 24 hours as fallback
-    if not today_txns:
-        yesterday_str = (now_ist - td(hours=24)).strftime("%Y-%m-%dT%H:%M:%S")
+        # If no today transactions found, try created_at
+        if not today_txns:
+            try:
+                today_txns = db.select_range(
+                    "transactions",
+                    filters={"merchant_id": merchant_id},
+                    gte=("created_at", today_str),
+                    lte=("created_at", today_str + "T23:59:59+05:30"),
+                )
+            except Exception:
+                today_txns = []
+
+        # If still empty, use last 24 hours as fallback
+        if not today_txns:
+            yesterday_str = (now_ist - td(hours=24)).strftime("%Y-%m-%dT%H:%M:%S")
+            try:
+                today_txns = db.select_range(
+                    "transactions",
+                    filters={"merchant_id": merchant_id},
+                    gte=("created_at", yesterday_str),
+                )
+            except Exception:
+                today_txns = []
+
         try:
-            today_txns = db.select_range(
+            month_txns = db.select_range(
                 "transactions",
                 filters={"merchant_id": merchant_id},
-                gte=("created_at", yesterday_str),
+                gte=("created_at", month_start),
             )
         except Exception:
-            today_txns = []
+            month_txns = db.select("transactions", filters={"merchant_id": merchant_id})
+        recent = db.get_merchant_transactions(merchant_id, limit=10)
+        udharis = db.get_merchant_udharis(merchant_id)
+        customers = db.get_merchant_customers(merchant_id)
 
-    try:
-        month_txns = db.select_range(
-            "transactions",
-            filters={"merchant_id": merchant_id},
-            gte=("created_at", month_start),
-        )
-    except Exception:
-        month_txns = db.select("transactions", filters={"merchant_id": merchant_id})
-    recent = db.get_merchant_transactions(merchant_id, limit=10)
-    udharis = db.get_merchant_udharis(merchant_id)
-    customers = db.get_merchant_customers(merchant_id)
+        # Compute aggregates
+        t_inc, t_exp = _aggregate_txns(today_txns)
+        m_inc, m_exp = _aggregate_txns(month_txns)
+        total_udhari = sum(u.get("remaining", 0) for u in udharis if u.get("status") in ("pending", "partial", "overdue"))
+        overdue_udhari = sum(u.get("remaining", 0) for u in udharis if u.get("status") == "overdue")
 
-    # Compute aggregates
-    t_inc, t_exp = _aggregate_txns(today_txns)
-    m_inc, m_exp = _aggregate_txns(month_txns)
-    total_udhari = sum(u.get("remaining", 0) for u in udharis if u.get("status") in ("pending", "partial", "overdue"))
-    overdue_udhari = sum(u.get("remaining", 0) for u in udharis if u.get("status") == "overdue")
+        # PayScore (may not exist yet)
+        payscore_rows = db.select("payscore_history", filters={"merchant_id": merchant_id}, order_by="calculated_at", order_desc=True, limit=1)
+        payscore = payscore_rows[0].get("score") if payscore_rows else None
 
-    # PayScore (may not exist yet)
-    payscore_rows = db.select("payscore_history", filters={"merchant_id": merchant_id}, order_by="calculated_at", order_desc=True, limit=1)
-    payscore = payscore_rows[0].get("score") if payscore_rows else None
+        # Build alerts
+        alerts: list[dict] = []
+        if overdue_udhari > 0:
+            alerts.append({
+                "type": "overdue_udhari",
+                "severity": "warning",
+                "message": f"{overdue_udhari} rupaye ka udhari overdue hai.",
+            })
+        if m_exp > m_inc and m_inc > 0:
+            alerts.append({
+                "type": "expense_exceeds_income",
+                "severity": "critical",
+                "message": "Is mahine kharcha income se zyada ho gaya hai!",
+            })
 
-    # Build alerts
-    alerts: list[dict] = []
-    if overdue_udhari > 0:
-        alerts.append({
-            "type": "overdue_udhari",
-            "severity": "warning",
-            "message": f"{overdue_udhari} rupaye ka udhari overdue hai.",
-        })
-    if m_exp > m_inc and m_inc > 0:
-        alerts.append({
-            "type": "expense_exceeds_income",
-            "severity": "critical",
-            "message": "Is mahine kharcha income se zyada ho gaya hai!",
-        })
+        # Payment mode breakdowns
+        cash_income = sum(t["amount"] for t in month_txns if t.get("type") == "income" and t.get("payment_mode", "cash") == "cash")
+        upi_income = sum(t["amount"] for t in month_txns if t.get("type") == "income" and t.get("payment_mode") == "upi")
+        cash_expense = sum(t["amount"] for t in month_txns if t.get("type") == "expense" and t.get("payment_mode", "cash") == "cash")
+        upi_expense = sum(t["amount"] for t in month_txns if t.get("type") == "expense" and t.get("payment_mode") == "upi")
 
-    # Payment mode breakdowns
-    cash_income = sum(t["amount"] for t in month_txns if t.get("type") == "income" and t.get("payment_mode", "cash") == "cash")
-    upi_income = sum(t["amount"] for t in month_txns if t.get("type") == "income" and t.get("payment_mode") == "upi")
-    cash_expense = sum(t["amount"] for t in month_txns if t.get("type") == "expense" and t.get("payment_mode", "cash") == "cash")
-    upi_expense = sum(t["amount"] for t in month_txns if t.get("type") == "expense" and t.get("payment_mode") == "upi")
+        # Recent transactions with full details
+        recent_transactions = [
+            {
+                "id": t.get("id"),
+                "type": t.get("type"),
+                "amount": t.get("amount"),
+                "category": t.get("category"),
+                "payment_mode": t.get("payment_mode", "cash"),
+                "customer_name": t.get("customer_name"),
+                "created_at": t.get("created_at") or t.get("recorded_at"),
+                "description": t.get("description"),
+            }
+            for t in recent[:10]
+        ]
 
-    # Recent transactions with full details
-    recent_transactions = [
-        {
-            "id": t.get("id"),
-            "type": t.get("type"),
-            "amount": t.get("amount"),
-            "category": t.get("category"),
-            "payment_mode": t.get("payment_mode", "cash"),
-            "customer_name": t.get("customer_name"),
-            "created_at": t.get("created_at") or t.get("recorded_at"),
-            "description": t.get("description"),
+        return {
+            "merchant_id": merchant_id,
+            "today_income": round(t_inc, 2),
+            "today_expense": round(t_exp, 2),
+            "today_profit": round(t_inc - t_exp, 2),
+            "month_income": round(m_inc, 2),
+            "month_expense": round(m_exp, 2),
+            "month_profit": round(m_inc - m_exp, 2),
+            "cash_income": round(cash_income, 2),
+            "upi_income": round(upi_income, 2),
+            "cash_expense": round(cash_expense, 2),
+            "upi_expense": round(upi_expense, 2),
+            "total_udhari": round(total_udhari, 2),
+            "overdue_udhari": round(overdue_udhari, 2),
+            "payscore": payscore,
+            "active_customers": len(customers),
+            "recent_transactions": recent_transactions,
+            "alerts": alerts,
         }
-        for t in recent[:10]
-    ]
-
-    return {
-        "merchant_id": merchant_id,
-        "today_income": round(t_inc, 2),
-        "today_expense": round(t_exp, 2),
-        "today_profit": round(t_inc - t_exp, 2),
-        "month_income": round(m_inc, 2),
-        "month_expense": round(m_exp, 2),
-        "month_profit": round(m_inc - m_exp, 2),
-        "cash_income": round(cash_income, 2),
-        "upi_income": round(upi_income, 2),
-        "cash_expense": round(cash_expense, 2),
-        "upi_expense": round(upi_expense, 2),
-        "total_udhari": round(total_udhari, 2),
-        "overdue_udhari": round(overdue_udhari, 2),
-        "payscore": payscore,
-        "active_customers": len(customers),
-        "recent_transactions": recent_transactions,
-        "alerts": alerts,
-    }
+    except Exception as e:
+        logger.exception(f"Error in dashboard: {e}")
+        return {"error": True, "message": "Kuch gadbad ho gayi. Kripya dobara try karein.", "detail": str(e)}
 
 
 @router.get("/{merchant_id}/today", response_model=TodaySummary)
