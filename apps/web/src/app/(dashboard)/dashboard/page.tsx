@@ -346,8 +346,8 @@ export default function Home() {
         }))
       : (apiData?.udhari_list ?? []);
 
-  // Events: prefer WS, fallback to API
-  const events: APIEvent[] =
+  // Events: prefer WS, fallback to API, then generate from recent transactions
+  let events: APIEvent[] =
     wsState.events.length > 0
       ? wsState.events.map((e) => ({
           id: e.id,
@@ -358,6 +358,18 @@ export default function Home() {
           created_at: e.timestamp,
         }))
       : (apiData?.events ?? []);
+
+  // If no events, generate from recent transactions
+  if (events.length === 0 && apiData?.recent_transactions) {
+    events = apiData.recent_transactions.slice(0, 6).map((t: APITransaction, i: number) => ({
+      id: `txn_${i}`,
+      event_type: t.type === "income" ? "transaction" : "expense",
+      title: `${t.type === "income" ? "+" : "-"}Rs ${(t.amount || 0).toLocaleString("en-IN")} ${t.category || ""}`,
+      title_hindi: `${t.customer_name || ""} ${t.payment_mode === "upi" ? "UPI" : "Cash"}`,
+      severity: t.type === "income" ? ("info" as const) : ("warning" as const),
+      created_at: t.created_at || "",
+    }));
+  }
 
   // Alert on negative profit
   useEffect(() => {
