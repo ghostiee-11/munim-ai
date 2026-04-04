@@ -44,28 +44,16 @@ async def get_dashboard(merchant_id: str):
         today_str = now_ist.strftime("%Y-%m-%d")
         month_start = now_ist.replace(day=1).strftime("%Y-%m-%d")
 
-        # Fetch data - try recorded_at first, fallback to created_at
+        # Fetch today's transactions using created_at (has correct historical dates)
         try:
             today_txns = db.select_range(
                 "transactions",
                 filters={"merchant_id": merchant_id},
-                gte=("recorded_at", today_str),
-                lte=("recorded_at", today_str + "T23:59:59+05:30"),
+                gte=("created_at", today_str),
+                lte=("created_at", today_str + "T23:59:59+05:30"),
             )
         except Exception:
             today_txns = []
-
-        # If no today transactions found, try created_at
-        if not today_txns:
-            try:
-                today_txns = db.select_range(
-                    "transactions",
-                    filters={"merchant_id": merchant_id},
-                    gte=("created_at", today_str),
-                    lte=("created_at", today_str + "T23:59:59+05:30"),
-                )
-            except Exception:
-                today_txns = []
 
         # If still empty, use last 24 hours as fallback
         if not today_txns:
