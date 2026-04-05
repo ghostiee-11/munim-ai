@@ -8,6 +8,8 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, timedelta
 
+import numpy as np
+
 from fastapi import APIRouter, Query
 
 from models import db
@@ -102,10 +104,16 @@ def _simple_forecast(
     dow_income: dict[int, list[float]] = {i: [] for i in range(7)}
     dow_expense: dict[int, list[float]] = {i: [] for i in range(7)}
 
+    # Defaults for stddev (overwritten if txns exist)
+    income_stddev = 0.0
+    expense_stddev = 0.0
+
     if not txns:
         # Fallback: use reasonable defaults for a small Indian merchant
         avg_income = 28000.0
         avg_expense = 18000.0
+        income_stddev = avg_income * 0.3
+        expense_stddev = avg_expense * 0.3
     else:
         daily_income: dict[str, float] = {}
         daily_expense: dict[str, float] = {}
@@ -122,6 +130,12 @@ def _simple_forecast(
 
         avg_income = sum(daily_income.values()) / num_days
         avg_expense = sum(daily_expense.values()) / num_days
+
+        # Stddev for confidence intervals
+        income_values = list(daily_income.values()) if daily_income else [0]
+        expense_values = list(daily_expense.values()) if daily_expense else [0]
+        income_stddev = float(np.std(income_values)) if len(income_values) > 1 else avg_income * 0.3
+        expense_stddev = float(np.std(expense_values)) if len(expense_values) > 1 else avg_expense * 0.3
 
         # Build day-of-week patterns from actual transaction dates
         for d_str_hist, inc_val in daily_income.items():
@@ -198,6 +212,10 @@ def _simple_forecast(
             "predicted_income": day_income,
             "predicted_expense": day_expense,
             "predicted_net": day_net,
+            "income_upper": round(day_income + 1.5 * income_stddev, 2),
+            "income_lower": round(max(0, day_income - 1.5 * income_stddev), 2),
+            "expense_upper": round(day_expense + 1.5 * expense_stddev, 2),
+            "expense_lower": round(max(0, day_expense - 1.5 * expense_stddev), 2),
             "is_festival": is_festival,
             "festival_name": festival_name if is_festival else None,
             "festival_name_hi": festival_name_hi if is_festival else None,
@@ -467,6 +485,7 @@ async def get_forecast(
             upcoming_festivals=upcoming_festivals,
             cash_crunch_days=cash_crunch_days,
             recommendations=recommendations,
+            confidence_level="85% prediction interval (±1.5σ)",
             model_version="v2-festival-aware",
         )
     except Exception as e:

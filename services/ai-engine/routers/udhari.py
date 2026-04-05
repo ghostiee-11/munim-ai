@@ -147,6 +147,14 @@ async def settle_udhari(udhari_id: str, body: UdhariSettleRequest):
         "source": "udhari_settle",
     })
 
+    # Record ML reward for collection strategy
+    try:
+        from services.ml.thompson_sampler import ThompsonSamplingCollector
+        collector = ThompsonSamplingCollector()
+        collector.update(udhari_id, "whatsapp_text|polite_follow_up|morning_9am", "paid", body.amount, new_remaining)
+    except Exception:
+        pass
+
     await realtime.emit_udhari_settled(merchant_id, updated)
     await realtime.emit_dashboard_refresh(merchant_id)
 
@@ -176,15 +184,45 @@ async def send_reminder(udhari_id: str):
         from services.agents.collection_agent import generate_collection_message
         reminder_count = udhari.get("reminder_count", 0)
 
-        # Determine tone based on reminder count
-        if reminder_count == 0:
-            tone = "friendly_reminder"
-        elif reminder_count <= 2:
-            tone = "polite_follow_up"
-        elif reminder_count <= 4:
-            tone = "firm_request"
-        else:
-            tone = "urgent_notice"
+        # ML-selected tone via Thompson Sampling
+        ml_action_key = None
+        try:
+            from services.ml.thompson_sampler import ThompsonSamplingCollector, DebtorState
+            collector = ThompsonSamplingCollector()
+
+            # Calculate days overdue
+            created = udhari.get("created_at", "")
+            days_overdue = 0
+            if created:
+                try:
+                    from datetime import date as _date
+                    created_date = datetime.fromisoformat(created.replace("Z", "+00:00")).date()
+                    days_overdue = (_date.today() - created_date).days
+                except Exception:
+                    pass
+
+            state = DebtorState(
+                debtor_name=customer_name,
+                amount=remaining,
+                days_overdue=days_overdue,
+                reminder_count=reminder_count,
+                last_response=None,
+            )
+            action = collector.select_action(udhari_id, state)
+            tone = action.tone
+            ml_action_key = action.action_key
+            logger.info("ML-selected tone for %s: %s (confidence: %.2f)", customer_name, tone, action.confidence)
+        except Exception as e:
+            logger.debug("Thompson Sampler fallback: %s", e)
+            # Fallback to existing deterministic logic
+            if reminder_count == 0:
+                tone = "friendly_reminder"
+            elif reminder_count <= 2:
+                tone = "polite_follow_up"
+            elif reminder_count <= 4:
+                tone = "firm_request"
+            else:
+                tone = "urgent_notice"
 
         message = await generate_collection_message(
             debtor_name=customer_name,
@@ -227,6 +265,7 @@ async def send_reminder(udhari_id: str):
         "message": message,
         "whatsapp_result": wa_result,
         "payment_link": payment_link,
+        "ml_action_key": ml_action_key,
     }
 
 

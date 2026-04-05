@@ -86,6 +86,8 @@ Important:
   - "invoice banao 5000 ka" -> create_invoice, amount=5000
   - "Ravi ko 3 saree ka bill banao" -> create_invoice, customer_name="Ravi", description="3 saree"
   - Extract: customer_name, amount, description (items if mentioned)
+  - items: [{name, qty, rate}] -- ONLY for create_invoice when multiple items mentioned
+    Example: "3 saree 5500 wali aur 2 dupatta 300 ka" -> items: [{name:"Saree", qty:3, rate:5500}, {name:"Dupatta", qty:2, rate:300}]
 - "kitna stock hai" / "stock batao" / "stock check" / "inventory" / "maal kitna hai" / "stock kya hai" = check_stock
   - Examples: "saree ka stock batao" -> check_stock, category="saree"
   - "kitna stock hai" -> check_stock (all stock)

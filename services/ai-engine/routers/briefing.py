@@ -8,7 +8,7 @@ and actionable recommendations, optionally as an audio clip.
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException
 
@@ -55,6 +55,22 @@ async def _generate_briefing_text(merchant_id: str) -> dict:
     total_udhari = sum(u.get("remaining", 0) for u in udharis)
     overdue_amount = sum(u.get("remaining", 0) for u in overdue)
 
+    # GST deadline check
+    import json as _json
+    gst_alerts = []
+    today_day = datetime.now().day
+    today_month = datetime.now().strftime("%B")
+    if 15 <= today_day <= 19:
+        days_left = 20 - today_day
+        gst_alerts.append(f"GSTR-3B deadline {days_left} din mein! (20 {today_month})")
+    elif today_day > 20 and today_day <= 25:
+        late_days = today_day - 20
+        penalty = late_days * 100
+        gst_alerts.append(f"GSTR-3B {late_days} din late! Penalty: Rs {penalty}. Abhi file karein!")
+    if 6 <= today_day <= 10:
+        days_left = 11 - today_day
+        gst_alerts.append(f"GSTR-1 deadline {days_left} din mein! (11 {today_month})")
+
     context = (
         f"Merchant data for {today_str}:\n"
         f"- Today's income: Rs {t_income}\n"
@@ -64,6 +80,7 @@ async def _generate_briefing_text(merchant_id: str) -> dict:
         f"- Total transactions today: {len(today_txns)}\n"
         f"- Pending udhari: Rs {total_udhari} ({len(udharis)} entries)\n"
         f"- Overdue udhari: Rs {overdue_amount} ({len(overdue)} entries)\n"
+        f"- GST alerts: {'; '.join(gst_alerts) if gst_alerts else 'None'}\n"
     )
 
     prompt = (

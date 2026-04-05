@@ -840,8 +840,38 @@ async def _create_invoice(merchant_id: str, entities: dict[str, Any]) -> ActionR
     if not amount:
         return ActionResult(False, "Invoice ke liye amount bataiye. Kitne ka bill banana hai?")
 
-    item_name = description if description else "Item"
-    items = [{"name": item_name, "qty": 1, "rate": float(amount), "description": description}]
+    # Parse items from voice description
+    items_data = entities.get("items", [])
+    if not items_data and description:
+        # Try Groq to parse "3 saree 5500 wali aur 2 dupatta 300" into structured items
+        try:
+            import httpx
+            settings = __import__("config", fromlist=["get_settings"]).get_settings()
+            parse_resp = await httpx.AsyncClient(timeout=10).post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {settings.groq_api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": settings.groq_model,
+                    "messages": [
+                        {"role": "system", "content": "Extract items from this Hindi invoice description. Return JSON array: [{\"name\": \"item\", \"qty\": 1, \"rate\": 100}]. ONLY return valid JSON array."},
+                        {"role": "user", "content": description},
+                    ],
+                    "temperature": 0.1, "max_tokens": 300,
+                    "response_format": {"type": "json_object"},
+                },
+            )
+            if parse_resp.status_code == 200:
+                import json as _json_parse
+                parsed = _json_parse.loads(parse_resp.json()["choices"][0]["message"]["content"])
+                items_data = parsed if isinstance(parsed, list) else parsed.get("items", [])
+        except Exception:
+            pass
+
+    if items_data:
+        items = [{"name": it.get("name", "Item"), "qty": it.get("qty", 1), "rate": float(it.get("rate", 0)), "description": it.get("name", "")} for it in items_data]
+    else:
+        item_name = description if description else "Item"
+        items = [{"name": item_name, "qty": 1, "rate": float(amount), "description": description}]
 
     try:
         import json as _json
