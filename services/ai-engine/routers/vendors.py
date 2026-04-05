@@ -213,6 +213,18 @@ async def get_upcoming(merchant_id: str, days: int = 14):
         upcoming.append({**p, "days_until": days_until})
 
     upcoming.sort(key=lambda x: x.get("days_until", 999))
+
+    # Auto-send alert for payments due in 3 days
+    for p in upcoming:
+        if p.get("days_until", 99) <= 3 and p.get("days_until", 99) >= 0:
+            try:
+                import asyncio
+                from services.twilio_service import send_whatsapp
+                msg = f"\u26a0\ufe0f {p['vendor_name']} ko Rs {p.get('remaining', 0):,.0f} {p['days_until']} din mein dena hai."
+                asyncio.create_task(send_whatsapp("+917725014797", msg))
+            except Exception:
+                pass
+
     return upcoming
 
 

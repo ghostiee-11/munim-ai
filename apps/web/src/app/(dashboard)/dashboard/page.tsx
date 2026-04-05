@@ -111,6 +111,47 @@ interface APIForecastDay {
   net: number;
 }
 
+interface PnLCategoryItem {
+  category: string;
+  amount: number;
+  pct: number;
+}
+
+interface PnLDailyTrend {
+  date: string;
+  income: number;
+  expense: number;
+  profit: number;
+}
+
+interface PnLTopCustomer {
+  name: string;
+  amount: number;
+  txn_count: number;
+}
+
+interface PnLReport {
+  period: string;
+  period_type: string;
+  total_income: number;
+  total_expense: number;
+  gross_profit: number;
+  personal_withdrawals: number;
+  business_profit: number;
+  profit_margin: number;
+  income_by_category: PnLCategoryItem[];
+  expense_by_category: PnLCategoryItem[];
+  daily_trend: PnLDailyTrend[];
+  vs_previous: {
+    income_change_pct: number;
+    expense_change_pct: number;
+    profit_change_pct: number;
+    trend: string;
+  };
+  top_customers: PnLTopCustomer[];
+  payment_modes: Record<string, { income: number; expense: number }>;
+}
+
 // ---- Sparkline component ----
 function MiniSparkline({ data, color, height = 32 }: { data: number[]; color: string; height?: number }) {
   const max = Math.max(...data);
@@ -266,6 +307,8 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [forecastData, setForecastData] = useState<APIForecastDay[]>([]);
+  const [pnlData, setPnlData] = useState<PnLReport | null>(null);
+  const [pnlExpanded, setPnlExpanded] = useState(false);
 
   // UI state
   const [alertVisible, setAlertVisible] = useState(false);
@@ -314,13 +357,28 @@ export default function Home() {
     }
   }, [apiUrl]);
 
+  // ---- Fetch P&L report ----
+  const fetchPnl = useCallback(async () => {
+    try {
+      const resp = await fetch(`${apiUrl}/api/dashboard/${DEMO_MERCHANT_ID}/pnl?period=month`);
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (!data.error) {
+        setPnlData(data);
+      }
+    } catch {
+      // P&L is optional — don't block UI
+    }
+  }, [apiUrl]);
+
   useEffect(() => {
     fetchDashboard();
     fetchForecast();
+    fetchPnl();
     // Auto-poll every 3 seconds to pick up changes from demo panel
     const interval = setInterval(fetchDashboard, 3000);
     return () => clearInterval(interval);
-  }, [fetchDashboard, fetchForecast]);
+  }, [fetchDashboard, fetchForecast, fetchPnl]);
 
   // ---- Merge WebSocket updates with API data ----
   const todayIncome = wsState.todayIncome > 0 ? wsState.todayIncome : (apiData?.today_income ?? 0);
@@ -917,6 +975,258 @@ export default function Home() {
                 </div>
               </motion.div>
             </div>
+
+            {/* Monthly P&L Report -- Expandable Section */}
+            {pnlData && (
+              <motion.div
+                custom={5.5}
+                initial="hidden"
+                animate="visible"
+                variants={cardVariants}
+                className="bg-white rounded-2xl shadow-sm border border-gray-100 hover:shadow-md transition-all"
+              >
+                {/* Header -- always visible, click to expand */}
+                <button
+                  onClick={() => setPnlExpanded(!pnlExpanded)}
+                  className="w-full flex items-center justify-between p-5 text-left"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 shrink-0">
+                      <FileText className="h-5 w-5 text-[#002E6E]" />
+                    </div>
+                    <div>
+                      <h3 className="font-semibold text-gray-900 text-sm">
+                        Monthly P&L &mdash; {pnlData.period}
+                      </h3>
+                      <p className="text-[11px] text-gray-400 mt-0.5">
+                        Profit: {formatINR(pnlData.business_profit)} | Margin: {pnlData.profit_margin}%
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span
+                      className={`inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-lg ${
+                        pnlData.vs_previous.trend === "improving"
+                          ? "bg-emerald-50 text-emerald-600"
+                          : pnlData.vs_previous.trend === "declining"
+                          ? "bg-red-50 text-red-600"
+                          : "bg-gray-50 text-gray-600"
+                      }`}
+                    >
+                      {pnlData.vs_previous.trend === "improving" ? (
+                        <TrendingUp className="h-3 w-3" />
+                      ) : pnlData.vs_previous.trend === "declining" ? (
+                        <TrendingDown className="h-3 w-3" />
+                      ) : null}
+                      {pnlData.vs_previous.trend === "improving"
+                        ? "Improving"
+                        : pnlData.vs_previous.trend === "declining"
+                        ? "Declining"
+                        : "Stable"}
+                    </span>
+                    <svg
+                      className={`h-4 w-4 text-gray-400 transition-transform ${pnlExpanded ? "rotate-180" : ""}`}
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2}
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </div>
+                </button>
+
+                {/* Expandable body */}
+                <AnimatePresence>
+                  {pnlExpanded && (
+                    <motion.div
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: "auto", opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.3, ease: "easeInOut" }}
+                      className="overflow-hidden"
+                    >
+                      <div className="px-5 pb-5 space-y-5">
+                        {/* Summary Bar */}
+                        <div className="space-y-3">
+                          {/* Income bar */}
+                          <div>
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-xs font-medium text-gray-600">Income</span>
+                              <span className="text-xs font-bold text-emerald-600">{formatINR(pnlData.total_income)}</span>
+                            </div>
+                            <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
+                              <div className="h-full bg-emerald-500 rounded-full" style={{ width: "100%" }} />
+                            </div>
+                          </div>
+                          {/* Expense bar */}
+                          <div>
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-xs font-medium text-gray-600">Expense</span>
+                              <span className="text-xs font-bold text-red-500">{formatINR(pnlData.total_expense)}</span>
+                            </div>
+                            <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-red-500 rounded-full"
+                                style={{
+                                  width: `${pnlData.total_income > 0 ? Math.min((pnlData.total_expense / pnlData.total_income) * 100, 100) : 0}%`,
+                                }}
+                              />
+                            </div>
+                          </div>
+                          {/* Personal bar */}
+                          {pnlData.personal_withdrawals > 0 && (
+                            <div>
+                              <div className="flex items-center justify-between mb-1">
+                                <span className="text-xs font-medium text-gray-600">Personal</span>
+                                <span className="text-xs font-bold text-gray-500">{formatINR(pnlData.personal_withdrawals)}</span>
+                              </div>
+                              <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
+                                <div
+                                  className="h-full bg-gray-400 rounded-full"
+                                  style={{
+                                    width: `${pnlData.total_income > 0 ? Math.min((pnlData.personal_withdrawals / pnlData.total_income) * 100, 100) : 0}%`,
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          )}
+                          {/* Divider + Profit */}
+                          <div className="flex items-center justify-between pt-2 border-t border-gray-200">
+                            <span className="text-sm font-bold text-gray-900">Business Profit</span>
+                            <div className="text-right">
+                              <span className={`text-lg font-bold ${pnlData.business_profit >= 0 ? "text-emerald-600" : "text-red-500"}`}>
+                                {formatINR(pnlData.business_profit)}
+                              </span>
+                              <span className="text-xs text-gray-400 ml-2">Margin: {pnlData.profit_margin}%</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Two-column: Income by Category | Expense by Category */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          {/* Income by Category */}
+                          <div className="bg-emerald-50/50 rounded-xl p-4 border border-emerald-100">
+                            <h4 className="text-xs font-semibold text-gray-700 mb-3 flex items-center gap-1.5">
+                              <TrendingUp className="h-3.5 w-3.5 text-emerald-500" />
+                              Income by Category
+                            </h4>
+                            <div className="space-y-2.5">
+                              {pnlData.income_by_category.map((cat) => (
+                                <div key={cat.category}>
+                                  <div className="flex items-center justify-between mb-1">
+                                    <span className="text-xs text-gray-600 capitalize">{cat.category}</span>
+                                    <span className="text-xs font-semibold text-emerald-700">{formatINR(cat.amount)}</span>
+                                  </div>
+                                  <div className="h-2 bg-emerald-100 rounded-full overflow-hidden">
+                                    <div
+                                      className="h-full bg-emerald-500 rounded-full transition-all"
+                                      style={{ width: `${cat.pct}%` }}
+                                    />
+                                  </div>
+                                  <p className="text-[10px] text-gray-400 mt-0.5">{cat.pct}%</p>
+                                </div>
+                              ))}
+                              {pnlData.income_by_category.length === 0 && (
+                                <p className="text-xs text-gray-400 text-center py-2">No income data</p>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Expense by Category */}
+                          <div className="bg-red-50/50 rounded-xl p-4 border border-red-100">
+                            <h4 className="text-xs font-semibold text-gray-700 mb-3 flex items-center gap-1.5">
+                              <TrendingDown className="h-3.5 w-3.5 text-red-500" />
+                              Expense by Category
+                            </h4>
+                            <div className="space-y-2.5">
+                              {pnlData.expense_by_category.map((cat) => (
+                                <div key={cat.category}>
+                                  <div className="flex items-center justify-between mb-1">
+                                    <span className="text-xs text-gray-600 capitalize">{cat.category}</span>
+                                    <span className="text-xs font-semibold text-red-600">{formatINR(cat.amount)}</span>
+                                  </div>
+                                  <div className="h-2 bg-red-100 rounded-full overflow-hidden">
+                                    <div
+                                      className="h-full bg-red-500 rounded-full transition-all"
+                                      style={{ width: `${cat.pct}%` }}
+                                    />
+                                  </div>
+                                  <p className="text-[10px] text-gray-400 mt-0.5">{cat.pct}%</p>
+                                </div>
+                              ))}
+                              {pnlData.expense_by_category.length === 0 && (
+                                <p className="text-xs text-gray-400 text-center py-2">No expense data</p>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Bottom row: Comparison, Top Customer, Payment Modes */}
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                          {/* vs Previous Period */}
+                          <div className="bg-gray-50 rounded-xl p-3 border border-gray-100">
+                            <p className="text-[10px] text-gray-400 font-medium uppercase tracking-wider mb-2">vs Last Period</p>
+                            <div className="space-y-1.5">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs text-gray-500">Income</span>
+                                <span className={`text-xs font-bold ${pnlData.vs_previous.income_change_pct >= 0 ? "text-emerald-600" : "text-red-500"}`}>
+                                  {pnlData.vs_previous.income_change_pct >= 0 ? "+" : ""}{pnlData.vs_previous.income_change_pct}%
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs text-gray-500">Expense</span>
+                                <span className={`text-xs font-bold ${pnlData.vs_previous.expense_change_pct <= 0 ? "text-emerald-600" : "text-red-500"}`}>
+                                  {pnlData.vs_previous.expense_change_pct >= 0 ? "+" : ""}{pnlData.vs_previous.expense_change_pct}%
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs text-gray-500">Profit</span>
+                                <span className={`text-xs font-bold ${pnlData.vs_previous.profit_change_pct >= 0 ? "text-emerald-600" : "text-red-500"}`}>
+                                  {pnlData.vs_previous.profit_change_pct >= 0 ? "+" : ""}{pnlData.vs_previous.profit_change_pct}%
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Top Customer */}
+                          <div className="bg-gray-50 rounded-xl p-3 border border-gray-100">
+                            <p className="text-[10px] text-gray-400 font-medium uppercase tracking-wider mb-2">Top Customer</p>
+                            {pnlData.top_customers.length > 0 ? (
+                              <div>
+                                <p className="text-sm font-bold text-gray-900">{pnlData.top_customers[0].name}</p>
+                                <p className="text-xs text-emerald-600 font-semibold">{formatINR(pnlData.top_customers[0].amount)}</p>
+                                <p className="text-[10px] text-gray-400">{pnlData.top_customers[0].txn_count} transactions</p>
+                              </div>
+                            ) : (
+                              <p className="text-xs text-gray-400">No customer data</p>
+                            )}
+                          </div>
+
+                          {/* Payment Mode Split */}
+                          <div className="bg-gray-50 rounded-xl p-3 border border-gray-100">
+                            <p className="text-[10px] text-gray-400 font-medium uppercase tracking-wider mb-2">Payment Modes</p>
+                            <div className="space-y-1.5">
+                              {Object.entries(pnlData.payment_modes).map(([mode, vals]) => (
+                                <div key={mode} className="flex items-center justify-between">
+                                  <span className="text-xs text-gray-500 capitalize">{mode}</span>
+                                  <span className="text-xs font-semibold text-gray-700">
+                                    {formatINR(vals.income)}
+                                  </span>
+                                </div>
+                              ))}
+                              {Object.keys(pnlData.payment_modes).length === 0 && (
+                                <p className="text-xs text-gray-400">No data</p>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </motion.div>
+            )}
 
             {/* Bottom Row: 4 Columns */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
