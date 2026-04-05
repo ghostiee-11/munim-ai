@@ -89,7 +89,7 @@ async def gst_chat(body: dict):
     system_prompt = f"""You are MunimAI's GST expert chatbot for Indian small businesses.
 
 RULES:
-1. Answer GST questions in simple Hindi (with English terms for GST jargon)
+1. Reply in the SAME LANGUAGE the user asks in. If they ask in English, reply in English. If Hindi, reply in Hindi. If Hinglish, reply in Hinglish.
 2. Be specific with rates, HSN codes, due dates, penalties
 3. Reference the merchant's actual business data when relevant
 4. Keep answers concise (under 200 words)
@@ -129,6 +129,254 @@ Answer the merchant's GST question:"""
     return {
         "answer": "Maaf kijiye, abhi answer nahi mil paya. Kripya apne CA se puchein ya dobara try karein.",
         "question": question,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Feature 1: GSTR-3B JSON Download
+# ---------------------------------------------------------------------------
+@router.get("/download-json/{merchant_id}")
+async def download_gstr3b_json(merchant_id: str, period: str = Query(None)):
+    """Generate downloadable GSTR-3B JSON in GST portal format."""
+    from fastapi.responses import JSONResponse
+
+    if not period:
+        period = date.today().strftime("%Y-%m")
+
+    summary = await get_gst_summary(merchant_id, period=period)
+    year, month = period.split("-")
+    ret_period = f"{month}{year}"
+
+    gstr3b = {
+        "gstin": "07XXXXX1234X1Z5",
+        "ret_period": ret_period,
+        "sup_details": {
+            "osup_det": {
+                "txval": summary.total_sales,
+                "iamt": 0,
+                "camt": round(summary.gst_collected / 2, 2),
+                "samt": round(summary.gst_collected / 2, 2),
+                "csamt": 0,
+            },
+            "osup_zero": {"txval": 0, "iamt": 0, "camt": 0, "samt": 0, "csamt": 0},
+            "osup_nil_exmp": {"txval": 0},
+            "isup_rev": {"txval": 0, "iamt": 0, "camt": 0, "samt": 0, "csamt": 0},
+            "osup_nongst": {"txval": 0},
+        },
+        "itc_elg": {
+            "itc_avl": [
+                {"ty": "IMPG", "iamt": 0, "camt": round(summary.gst_paid / 2, 2), "samt": round(summary.gst_paid / 2, 2), "csamt": 0},
+            ],
+            "itc_rev": [{"ty": "RUL", "iamt": 0, "camt": 0, "samt": 0, "csamt": 0}],
+            "itc_net": {"iamt": 0, "camt": round(summary.gst_paid / 2, 2), "samt": round(summary.gst_paid / 2, 2), "csamt": 0},
+            "itc_inelg": [{"ty": "RUL", "iamt": 0, "camt": 0, "samt": 0, "csamt": 0}],
+        },
+        "intr_ltfee": {
+            "intr_details": {"iamt": 0, "camt": 0, "samt": 0, "csamt": 0},
+            "ltfee_details": {"iamt": 0, "camt": 0, "samt": 0, "csamt": 0},
+        },
+        "tax_pmt": {
+            "net_tax": round(summary.net_gst_liability, 2),
+            "camt": round(summary.net_gst_liability / 2, 2),
+            "samt": round(summary.net_gst_liability / 2, 2),
+        },
+        "_metadata": {
+            "generated_by": "MunimAI",
+            "period_display": period,
+            "total_sales": summary.total_sales,
+            "total_purchases": summary.total_purchases,
+        },
+    }
+
+    headers = {"Content-Disposition": f"attachment; filename=GSTR3B_{ret_period}.json"}
+    return JSONResponse(content=gstr3b, headers=headers)
+
+
+# ---------------------------------------------------------------------------
+# Feature 2: ITC Mismatch via OCR
+# ---------------------------------------------------------------------------
+@router.post("/itc-verify/{merchant_id}")
+async def verify_itc_from_invoice(merchant_id: str, body: dict):
+    """Upload purchase invoice image, OCR extracts data, cross-check with recorded expenses."""
+    from services.ocr_service import extract_invoice_data
+
+    image_b64 = body.get("image_base64", "")
+    if not image_b64:
+        raise HTTPException(status_code=400, detail="image_base64 is required")
+
+    result = await extract_invoice_data(image_b64, merchant_id, "invoice")
+
+    if not result.get("data"):
+        return {"success": False, "error": result.get("error", "OCR failed"), "matches": []}
+
+    data = result["data"]
+    invoice_vendor = data.get("vendor", "Unknown")
+    invoice_total = float(data.get("total", 0) or 0)
+    invoice_tax = float(data.get("tax", 0) or 0)
+    invoice_items = data.get("items", [])
+
+    # Cross-check with recorded expenses
+    expenses = db.select("transactions", filters={"merchant_id": merchant_id, "type": "expense"}, limit=500)
+
+    matches = []
+    for exp in expenses:
+        exp_amount = float(exp.get("amount", 0))
+        exp_desc = (exp.get("description", "") + " " + exp.get("category", "")).lower()
+        vendor_lower = invoice_vendor.lower()
+
+        # Match by amount (within 5%) or vendor name
+        amount_match = abs(exp_amount - invoice_total) / max(invoice_total, 1) < 0.05
+        vendor_match = vendor_lower in exp_desc or any(w in exp_desc for w in vendor_lower.split() if len(w) > 3)
+
+        if amount_match or vendor_match:
+            diff = round(abs(exp_amount - invoice_total), 2)
+            matches.append({
+                "transaction_id": exp.get("id"),
+                "recorded_amount": exp_amount,
+                "invoice_amount": invoice_total,
+                "difference": diff,
+                "status": "matched" if diff < 100 else "mismatch",
+                "category": exp.get("category", ""),
+                "date": exp.get("created_at", "")[:10],
+            })
+
+    mismatch_count = len([m for m in matches if m["status"] == "mismatch"])
+
+    return {
+        "success": True,
+        "vendor": invoice_vendor,
+        "invoice_total": invoice_total,
+        "invoice_tax": invoice_tax,
+        "items_found": len(invoice_items),
+        "matches": matches,
+        "mismatch_count": mismatch_count,
+        "alert_hi": f"{'⚠️ ' + str(mismatch_count) + ' mismatch mila!' if mismatch_count else '✅ Sab match ho raha hai.'} Invoice: Rs {invoice_total:,.0f}, Vendor: {invoice_vendor}",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Feature 3: GST Deadline WhatsApp Reminder
+# ---------------------------------------------------------------------------
+@router.post("/send-deadline-reminder/{merchant_id}")
+async def send_gst_deadline_reminder(merchant_id: str):
+    """Send WhatsApp reminder about upcoming GST filing deadline."""
+    from services.twilio_service import send_whatsapp
+
+    today = date.today()
+    day = today.day
+
+    # GSTR-3B due 20th, GSTR-1 due 11th
+    alerts = []
+    if 15 <= day <= 19:
+        days_left = 20 - day
+        alerts.append(f"GSTR-3B ki deadline {days_left} din mein hai (20 {today.strftime('%B')})!")
+    elif day > 20:
+        late_days = day - 20
+        penalty = min(late_days * 100, 5000)
+        alerts.append(f"GSTR-3B overdue hai! {late_days} din late. Penalty: Rs {penalty}. Abhi file karein!")
+
+    if 6 <= day <= 10:
+        days_left = 11 - day
+        alerts.append(f"GSTR-1 ki deadline {days_left} din mein hai (11 {today.strftime('%B')})!")
+    elif 11 < day <= 15:
+        late_days = day - 11
+        alerts.append(f"GSTR-1 overdue! {late_days} din late.")
+
+    if not alerts:
+        return {"sent": False, "message": "No upcoming deadlines right now."}
+
+    # Get liability estimate
+    try:
+        summary = await get_gst_summary(merchant_id)
+        liability_text = f" Net liability: Rs {summary.net_gst_liability:,.0f}."
+    except Exception:
+        liability_text = ""
+
+    message = "🔔 GST Deadline Alert!\n\n" + "\n".join(alerts) + liability_text + "\n\n- MunimAI"
+
+    try:
+        result = await send_whatsapp(to="+917725014797", body=message)
+        return {"sent": True, "message": message, "whatsapp_result": result}
+    except Exception as e:
+        return {"sent": False, "message": message, "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Feature 4: Composition Scheme Advisor
+# ---------------------------------------------------------------------------
+@router.get("/composition-analysis/{merchant_id}")
+async def composition_scheme_analysis(merchant_id: str):
+    """Analyze if merchant benefits from GST Composition Scheme."""
+    import httpx
+
+    # Fetch all transactions to estimate annual turnover
+    txns = db.select("transactions", filters={"merchant_id": merchant_id}, limit=5000)
+
+    total_income = sum(t.get("amount", 0) for t in txns if t.get("type") == "income")
+    total_expense = sum(t.get("amount", 0) for t in txns if t.get("type") == "expense")
+
+    # Estimate annual turnover (extrapolate from available data)
+    if txns:
+        dates = [t.get("created_at", "")[:10] for t in txns if t.get("created_at")]
+        unique_days = len(set(dates)) or 1
+        daily_avg = total_income / unique_days
+        annual_turnover = daily_avg * 365
+    else:
+        annual_turnover = 0
+
+    eligible = annual_turnover < 15000000  # Rs 1.5 Cr limit
+
+    # Current effective GST rate
+    try:
+        summary = await get_gst_summary(merchant_id)
+        current_gst = summary.gst_collected
+        current_rate = round(current_gst / max(total_income, 1) * 100, 1)
+    except Exception:
+        current_gst = 0
+        current_rate = 18
+
+    composition_rate = 1.0  # 1% for traders/manufacturers
+    annual_gst_current = round(annual_turnover * current_rate / 100, 2)
+    annual_gst_composition = round(annual_turnover * composition_rate / 100, 2)
+    annual_saving = round(annual_gst_current - annual_gst_composition, 2)
+
+    # Groq recommendation
+    recommendation_hi = ""
+    try:
+        settings_obj = get_settings()
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {"Authorization": f"Bearer {settings_obj.groq_api_key}", "Content-Type": "application/json"}
+        prompt = f"""Merchant ka annual turnover Rs {annual_turnover:,.0f} hai. Current GST rate ~{current_rate}%, Composition scheme mein 1% lagega.
+Annual saving: Rs {annual_saving:,.0f}.
+Composition scheme mein ITC nahi milta aur inter-state supply nahi kar sakte.
+Kya merchant ko composition scheme leni chahiye? 2-3 lines mein Hindi mein batao."""
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(url, headers=headers, json={
+                "model": settings_obj.groq_model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.3, "max_tokens": 200,
+            })
+        if resp.status_code == 200:
+            recommendation_hi = resp.json()["choices"][0]["message"]["content"].strip()
+    except Exception:
+        recommendation_hi = f"Aapka turnover Rs {annual_turnover:,.0f} hai. Composition scheme se Rs {annual_saving:,.0f}/year bach sakta hai, lekin ITC nahi milega."
+
+    return {
+        "eligible": eligible,
+        "annual_turnover": round(annual_turnover, 2),
+        "current_effective_rate": current_rate,
+        "composition_rate": composition_rate,
+        "annual_saving": max(0, annual_saving),
+        "current_annual_gst": annual_gst_current,
+        "composition_annual_gst": annual_gst_composition,
+        "recommendation_hi": recommendation_hi,
+        "tradeoffs": [
+            "ITC (Input Tax Credit) nahi milega",
+            "Inter-state supply nahi kar sakte",
+            "Quarterly filing (monthly nahi)",
+            "Invoice pe 'Composition Taxable Person' likhna hoga",
+        ],
     }
 
 

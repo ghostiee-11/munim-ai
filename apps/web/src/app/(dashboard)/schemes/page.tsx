@@ -427,7 +427,7 @@ export default function SchemesPage() {
 
           return (
             <motion.div
-              key={scheme.id}
+              key={`${scheme.id}_${i}`}
               initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.1 + i * 0.08 }}

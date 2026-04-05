@@ -205,9 +205,8 @@ export default function GSTPage() {
   const [tipsLoading, setTipsLoading] = useState(true);
 
   // GST Chatbot state
-  const [chatOpen, setChatOpen] = useState(false);
   const [chatMessages, setChatMessages] = useState<{role: "user" | "bot"; text: string}[]>([
-    { role: "bot", text: "Namaste! Main aapka GST expert hoon. GST se related koi bhi sawaal puchein - rates, HSN codes, filing, ITC, penalties - sab samjha dunga!" }
+    { role: "bot", text: "Hi! I'm your GST expert. Ask me anything about GST rates, HSN codes, ITC, filing deadlines, penalties, or compliance. I have access to your business data for personalized answers." }
   ]);
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
@@ -1003,105 +1002,103 @@ export default function GSTPage() {
         )}
       </motion.div>
 
-      {/* GST Chatbot */}
-      <div className="fixed bottom-6 right-6 z-40">
-        <AnimatePresence>
-          {chatOpen && (
-            <motion.div
-              initial={{ opacity: 0, y: 20, scale: 0.95 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 20, scale: 0.95 }}
-              className="mb-3 w-80 bg-white rounded-2xl shadow-2xl border border-gray-200 overflow-hidden"
-            >
-              {/* Chat header */}
-              <div className="bg-gradient-to-r from-[#002E6E] to-[#0052B4] px-4 py-3 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Sparkles className="w-4 h-4 text-blue-300" />
-                  <span className="text-sm font-semibold text-white">GST Expert</span>
-                </div>
-                <button onClick={() => setChatOpen(false)} className="text-blue-200 hover:text-white">
-                  <ChevronDown className="w-4 h-4" />
-                </button>
-              </div>
+      {/* ===== GST Expert Chatbot Section ===== */}
+      <motion.div
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.5 }}
+        className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden"
+      >
+        <div className="bg-gradient-to-r from-[#002E6E] to-[#0052B4] px-5 py-4 flex items-center gap-3">
+          <div className="p-2 bg-white/10 rounded-xl">
+            <MessageCircle className="w-5 h-5 text-blue-200" />
+          </div>
+          <div>
+            <h3 className="font-semibold text-white">GST Expert AI</h3>
+            <p className="text-[11px] text-blue-200">Ask any GST question - rates, HSN codes, ITC, filing, penalties</p>
+          </div>
+          <div className="ml-auto flex items-center gap-1.5">
+            <div className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse" />
+            <span className="text-[10px] text-emerald-300 font-medium">Online</span>
+          </div>
+        </div>
 
-              {/* Messages */}
-              <div className="h-72 overflow-y-auto p-3 space-y-2">
-                {chatMessages.map((msg, i) => (
-                  <div key={i} className={cn("flex", msg.role === "user" ? "justify-end" : "justify-start")}>
-                    <div className={cn(
-                      "max-w-[85%] px-3 py-2 rounded-xl text-xs leading-relaxed",
-                      msg.role === "user"
-                        ? "bg-[#00BAF2] text-white rounded-br-sm"
-                        : "bg-gray-100 text-gray-800 rounded-bl-sm"
-                    )}>
-                      {msg.text}
-                    </div>
-                  </div>
-                ))}
-                {chatLoading && (
-                  <div className="flex justify-start">
-                    <div className="bg-gray-100 px-3 py-2 rounded-xl rounded-bl-sm">
-                      <div className="flex gap-1">
-                        <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-                        <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-                        <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
-                      </div>
-                    </div>
+        {/* Quick question chips */}
+        <div className="px-5 pt-3 flex gap-2 flex-wrap">
+          {[
+            "What is my GST rate?",
+            "ITC kya hota hai?",
+            "Late filing penalty?",
+            "Composition scheme benefits?",
+            "GSTR-3B kab file karna hai?",
+            "How to claim Input Tax Credit?",
+          ].map((q) => (
+            <button
+              key={q}
+              onClick={() => { setChatInput(q); setTimeout(() => handleChatSend(), 100); }}
+              className="text-[11px] px-3 py-1.5 bg-blue-50 border border-blue-100 rounded-full text-blue-700 hover:bg-blue-100 transition-colors"
+            >
+              {q}
+            </button>
+          ))}
+        </div>
+
+        {/* Chat messages */}
+        <div className="px-5 py-3 space-y-3 max-h-96 overflow-y-auto">
+          {chatMessages.map((msg, i) => (
+            <div key={i} className={cn("flex", msg.role === "user" ? "justify-end" : "justify-start")}>
+              <div className={cn(
+                "max-w-[80%] px-4 py-2.5 rounded-2xl text-sm leading-relaxed",
+                msg.role === "user"
+                  ? "bg-[#00BAF2] text-white rounded-br-md"
+                  : "bg-gray-50 border border-gray-100 text-gray-800 rounded-bl-md"
+              )}>
+                {msg.role === "bot" && (
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <Sparkles className="w-3 h-3 text-amber-500" />
+                    <span className="text-[10px] font-semibold text-gray-400">GST Expert</span>
                   </div>
                 )}
+                <p className="whitespace-pre-wrap">{msg.text}</p>
               </div>
-
-              {/* Input */}
-              <div className="border-t border-gray-100 p-2 flex gap-2">
-                <input
-                  type="text"
-                  value={chatInput}
-                  onChange={(e) => setChatInput(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && handleChatSend()}
-                  placeholder="GST ka sawaal puchein..."
-                  className="flex-1 px-3 py-2 text-xs border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00BAF2]/30"
-                />
-                <button
-                  onClick={handleChatSend}
-                  disabled={chatLoading || !chatInput.trim()}
-                  className="p-2 bg-[#00BAF2] text-white rounded-xl hover:bg-[#00BAF2]/90 disabled:opacity-50"
-                >
-                  <ArrowRight className="w-4 h-4" />
-                </button>
+            </div>
+          ))}
+          {chatLoading && (
+            <div className="flex justify-start">
+              <div className="bg-gray-50 border border-gray-100 px-4 py-3 rounded-2xl rounded-bl-md">
+                <div className="flex items-center gap-2">
+                  <div className="flex gap-1">
+                    <div className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                    <div className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                    <div className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+                  </div>
+                  <span className="text-xs text-gray-400">Thinking...</span>
+                </div>
               </div>
+            </div>
+          )}
+        </div>
 
-              {/* Quick questions */}
-              <div className="px-2 pb-2 flex gap-1 flex-wrap">
-                {["ITC kya hota hai?", "Late filing penalty?", "Mera GST rate kya hai?"].map((q) => (
-                  <button
-                    key={q}
-                    onClick={() => { setChatInput(q); }}
-                    className="text-[9px] px-2 py-1 bg-gray-50 border border-gray-200 rounded-lg text-gray-500 hover:bg-gray-100"
-                  >
-                    {q}
-                  </button>
-                ))}
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* Floating button */}
-        <motion.button
-          whileTap={{ scale: 0.95 }}
-          onClick={() => setChatOpen(!chatOpen)}
-          className={cn(
-            "w-12 h-12 rounded-full shadow-lg flex items-center justify-center transition-colors",
-            chatOpen ? "bg-gray-600" : "bg-gradient-to-r from-[#002E6E] to-[#00BAF2]"
-          )}
-        >
-          {chatOpen ? (
-            <ChevronDown className="w-5 h-5 text-white" />
-          ) : (
-            <MessageCircle className="w-5 h-5 text-white" />
-          )}
-        </motion.button>
-      </div>
+        {/* Input area */}
+        <div className="border-t border-gray-100 px-5 py-3 flex gap-3">
+          <input
+            type="text"
+            value={chatInput}
+            onChange={(e) => setChatInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleChatSend()}
+            placeholder="Ask any GST question..."
+            className="flex-1 px-4 py-2.5 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00BAF2]/30 bg-gray-50"
+          />
+          <button
+            onClick={handleChatSend}
+            disabled={chatLoading || !chatInput.trim()}
+            className="px-4 py-2.5 bg-[#00BAF2] text-white rounded-xl hover:bg-[#00BAF2]/90 disabled:opacity-50 flex items-center gap-2 text-sm font-medium"
+          >
+            <ArrowRight className="w-4 h-4" />
+            Ask
+          </button>
+        </div>
+      </motion.div>
 
       {/* Mock Filing Flow Modal */}
       {showFilingFlow && (
