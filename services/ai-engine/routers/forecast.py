@@ -391,6 +391,113 @@ def _build_data_driven_recommendations(
     return recommendations
 
 
+@router.get("/cash-crunch-alert/{merchant_id}")
+async def cash_crunch_alert(merchant_id: str):
+    """Predict when merchant will run out of cash and suggest actions."""
+    # Get current cash position
+    txns = db.select("transactions", filters={"merchant_id": merchant_id}, limit=500)
+    total_income = sum(float(t.get("amount", 0)) for t in txns if t.get("type") == "income")
+    total_expense = sum(float(t.get("amount", 0)) for t in txns if t.get("type") == "expense")
+    current_cash = total_income - total_expense
+
+    # Calculate daily burn rate (last 30 days)
+    thirty_days_ago = (date.today() - timedelta(days=30)).isoformat()
+    recent = db.select_range("transactions", filters={"merchant_id": merchant_id}, gte=("created_at", thirty_days_ago))
+    recent_expense = sum(float(t.get("amount", 0)) for t in recent if t.get("type") == "expense")
+    recent_income = sum(float(t.get("amount", 0)) for t in recent if t.get("type") == "income")
+
+    days_data = len(set(str(t.get("created_at", ""))[:10] for t in recent)) or 1
+    daily_expense = recent_expense / days_data
+    daily_income = recent_income / days_data
+    daily_net = daily_income - daily_expense
+
+    # Cash runway
+    if daily_net < 0:
+        runway_days = int(current_cash / abs(daily_net)) if current_cash > 0 else 0
+    else:
+        runway_days = 999  # Positive cash flow
+
+    # Get pending udhari for collection suggestion
+    try:
+        udharis = db.get_merchant_udharis(merchant_id, status="pending")
+        overdue = db.get_merchant_udharis(merchant_id, status="overdue")
+        total_collectible = sum(float(u.get("amount", 0)) - float(u.get("amount_paid", 0)) for u in udharis + overdue)
+        top_debtors = sorted(udharis + overdue, key=lambda u: float(u.get("amount", 0)) - float(u.get("amount_paid", 0)), reverse=True)[:3]
+    except Exception:
+        total_collectible = 0
+        top_debtors = []
+
+    # Determine urgency
+    if runway_days <= 3:
+        urgency = "critical"
+        urgency_hi = "BAHUT URGENT"
+    elif runway_days <= 7:
+        urgency = "high"
+        urgency_hi = "URGENT"
+    elif runway_days <= 14:
+        urgency = "medium"
+        urgency_hi = "DHYAN DEIN"
+    else:
+        urgency = "low"
+        urgency_hi = "SAFE"
+
+    # Build suggestion
+    suggestions = []
+    if total_collectible > 0:
+        suggestions.append(f"Rs {total_collectible:,.0f} udhari collect karein")
+        for d in top_debtors:
+            remaining = float(d.get("amount", 0)) - float(d.get("amount_paid", 0))
+            suggestions.append(f"  - {d.get('debtor_name', 'Customer')}: Rs {remaining:,.0f}")
+    if daily_expense > daily_income:
+        cut_needed = round((daily_expense - daily_income) * 30, 2)
+        suggestions.append(f"Monthly kharcha Rs {cut_needed:,.0f} kam karein")
+
+    alert_hi = f"Cash position: Rs {current_cash:,.0f}. "
+    if runway_days < 999:
+        alert_hi += f"{runway_days} din ka kharcha cover ho sakta hai. "
+    else:
+        alert_hi += "Cash flow positive hai. "
+    if suggestions:
+        alert_hi += "Sujhaav: " + "; ".join(suggestions[:3])
+
+    return {
+        "merchant_id": merchant_id,
+        "current_cash": round(current_cash, 2),
+        "daily_income": round(daily_income, 2),
+        "daily_expense": round(daily_expense, 2),
+        "runway_days": runway_days,
+        "urgency": urgency,
+        "urgency_hi": urgency_hi,
+        "total_collectible": round(total_collectible, 2),
+        "top_debtors": [{"name": d.get("debtor_name"), "amount": round(float(d.get("amount", 0)) - float(d.get("amount_paid", 0)), 2)} for d in top_debtors],
+        "suggestions": suggestions,
+        "alert_hi": alert_hi,
+    }
+
+
+@router.post("/cash-crunch-notify/{merchant_id}")
+async def send_cash_crunch_alert(merchant_id: str):
+    """Send cash crunch WhatsApp alert if runway < 7 days."""
+    from services.twilio_service import send_whatsapp as _send_wa
+
+    data = await cash_crunch_alert(merchant_id)
+    if data["runway_days"] >= 14:
+        return {"sent": False, "reason": "Cash position healthy"}
+
+    msg = f"\u26a0\ufe0f {data['urgency_hi']}! Cash Alert\n\n"
+    msg += f"Cash: Rs {data['current_cash']:,.0f}\n"
+    msg += f"Runway: {data['runway_days']} din\n\n"
+    if data["suggestions"]:
+        msg += "Kya karein:\n" + "\n".join(f"\u2022 {s}" for s in data["suggestions"][:4])
+    msg += "\n\n- MunimAI"
+
+    try:
+        result = await _send_wa(to="+917725014797", body=msg)
+        return {"sent": True, "message": msg, "data": data}
+    except Exception as e:
+        return {"sent": False, "message": msg, "error": str(e)}
+
+
 @router.get("/{merchant_id}", response_model=ForecastResponse)
 async def get_forecast(
     merchant_id: str,
