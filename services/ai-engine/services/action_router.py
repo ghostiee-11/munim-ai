@@ -213,6 +213,44 @@ async def _add_expense(merchant_id: str, entities: dict[str, Any]) -> ActionResu
 
 
 # ---------------------------------------------------------------------------
+# Handlers -- Personal Withdrawal (Business vs Personal separation)
+# ---------------------------------------------------------------------------
+
+@_register("personal_withdrawal")
+async def _personal_withdrawal(merchant_id: str, entities: dict[str, Any]) -> ActionResult:
+    amount = entities.get("amount")
+    if not amount:
+        return ActionResult(False, "Kitne rupaye nikale? Amount bataiye.")
+
+    description = entities.get("description", "Personal withdrawal")
+
+    try:
+        txn = db.insert("transactions", {
+            "merchant_id": merchant_id,
+            "amount": float(amount),
+            "type": "expense",
+            "category": "personal",
+            "description": description,
+            "is_personal": True,
+            "source": "voice",
+            "payment_mode": "cash",
+            "recorded_at": datetime.now().isoformat(),
+        })
+    except Exception:
+        logger.exception("Failed to insert personal withdrawal")
+        return ActionResult(False, "Personal withdrawal record nahi ho paya. Dobara try karein.")
+
+    await realtime.emit_transaction_created(merchant_id, txn)
+    await realtime.emit_dashboard_refresh(merchant_id)
+
+    return ActionResult(
+        success=True,
+        response_text=f"Rs {amount} personal withdrawal record ho gaya. Ye business P&L mein nahi dikhega.",
+        data={"transaction": txn},
+    )
+
+
+# ---------------------------------------------------------------------------
 # Handlers -- Udhari
 # ---------------------------------------------------------------------------
 

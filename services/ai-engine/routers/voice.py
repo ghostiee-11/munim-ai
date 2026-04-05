@@ -53,7 +53,7 @@ async def transcribe_audio(audio_bytes: bytes, language: str = "hi") -> str:
 
 NLU_SYSTEM_PROMPT = """You are the NLU engine for MunimAI, an AI accounting assistant for Indian small businesses.
 Given user speech (Hindi/Hinglish/English), extract:
-1. intent: one of [add_income, add_expense, add_udhari, settle_udhari, get_today_summary, get_udhari_summary, get_balance, send_reminder, setup_recurring, add_vendor_payment, add_vendor_order, check_vendor_balance, greeting, help, unknown]
+1. intent: one of [add_income, add_expense, personal_withdrawal, add_udhari, settle_udhari, get_today_summary, get_udhari_summary, get_balance, send_reminder, setup_recurring, add_vendor_payment, add_vendor_order, check_vendor_balance, greeting, help, unknown]
 2. entities: {amount, category, party_name, customer_name, beneficiary_name, description, phone, due_date, payment_mode, frequency, upi_id} -- only include what is present
 3. confidence: 0.0 to 1.0
 
@@ -81,6 +81,12 @@ Important:
   - Examples: "Mumbai Dyes se 50000 ka order karo" -> add_vendor_order, amount=50000, party_name="Mumbai Dyes"
 - "vendor ka balance" / "supplier ko kitna dena hai" / "vendor outstanding" = check_vendor_balance
   - Examples: "Rajan Textiles ko kitna dena hai" -> check_vendor_balance, party_name="Rajan Textiles"
+- "ghar ke liye" / "personal use" / "bete ki fees" / "wife ko" / "apne liye" / "ghar kharcha" = personal_withdrawal
+  - Examples: "5000 ghar ke liye nikala" -> personal_withdrawal, amount=5000, description="ghar ke liye"
+  - "2000 bete ki fees di" -> personal_withdrawal, amount=2000, description="bete ki fees"
+  - "wife ko 1500 diya" -> personal_withdrawal, amount=1500, description="wife ko diya"
+  - "personal use ke liye 3000" -> personal_withdrawal, amount=3000, description="personal use"
+  - This is money taken OUT of business for personal/family use. NOT a business expense.
 - For amounts: "paanch hazaar" = 5000, "do sau" = 200, etc.
 - payment_mode: "cash" if naqad/haath se/cash/rokda, "upi" if UPI/online/phone pe/Google Pay/Paytm/GPay/digital. Default to "cash" if not specified.
 """
