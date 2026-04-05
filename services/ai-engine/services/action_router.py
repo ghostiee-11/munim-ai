@@ -1008,6 +1008,125 @@ async def _check_stock(merchant_id: str, entities: dict[str, Any]) -> ActionResu
 
 
 # ---------------------------------------------------------------------------
+# Handlers -- Employee operations
+# ---------------------------------------------------------------------------
+
+@_register("mark_attendance")
+async def _mark_attendance(merchant_id: str, entities: dict[str, Any]) -> ActionResult:
+    name = entities.get("beneficiary_name", entities.get("customer_name", ""))
+    status_text = entities.get("description", "absent").lower()
+
+    if "present" in status_text or "aaya" in status_text:
+        status = "present"
+    elif "half" in status_text or "aadha" in status_text:
+        status = "half_day"
+    else:
+        status = "absent"
+
+    if not name:
+        return ActionResult(False, "Kiska attendance mark karna hai? Naam batayein.", {})
+
+    # Find employee by name
+    employees = db.get_merchant_employees(merchant_id)
+    matched = None
+    for e in employees:
+        if name.lower() in e.get("name", "").lower():
+            matched = e
+            break
+
+    if not matched:
+        return ActionResult(False, f"{name} naam ka koi employee nahi mila.", {})
+
+    # Mark attendance
+    current = matched.get("attendance_this_month", 0) or 0
+    if status == "present":
+        new_count = current + 1
+    elif status == "half_day":
+        new_count = current + 0.5
+    else:
+        new_count = current
+
+    db.update("employees", matched["id"], {"attendance_this_month": int(new_count)})
+
+    status_hindi = {"present": "present", "absent": "absent", "half_day": "half day"}
+    return ActionResult(
+        success=True,
+        response_text=f"{matched['name']} ka attendance {status_hindi.get(status, status)} mark ho gaya. Total {int(new_count)} din.",
+        data={"employee": matched["name"], "status": status, "attendance": new_count},
+    )
+
+
+@_register("check_employee")
+async def _check_employee(merchant_id: str, entities: dict[str, Any]) -> ActionResult:
+    name = entities.get("beneficiary_name", entities.get("customer_name", ""))
+    employees = db.get_merchant_employees(merchant_id)
+
+    if not name:
+        # List all employees
+        if not employees:
+            return ActionResult(True, "Abhi koi employee nahi hai.", {})
+        lines = [f"{e['name']} - {e.get('role', '')} - Rs {e.get('salary', 0):,.0f}" for e in employees]
+        return ActionResult(
+            success=True,
+            response_text="Aapke employees:\n" + "\n".join(lines),
+            data={"employees": employees},
+        )
+
+    matched = None
+    for e in employees:
+        if name.lower() in e.get("name", "").lower():
+            matched = e
+            break
+
+    if not matched:
+        return ActionResult(False, f"{name} naam ka koi employee nahi mila.", {})
+
+    return ActionResult(
+        success=True,
+        response_text=f"{matched['name']} - Role: {matched.get('role', '-')}, Salary: Rs {matched.get('salary', 0):,.0f}, Attendance: {matched.get('attendance_this_month', 0)} din",
+        data=matched,
+    )
+
+
+@_register("employee_advance")
+async def _employee_advance(merchant_id: str, entities: dict[str, Any]) -> ActionResult:
+    name = entities.get("beneficiary_name", entities.get("customer_name", ""))
+    amount = entities.get("amount", 0)
+
+    if not name or not amount:
+        return ActionResult(False, "Employee ka naam aur amount batayein.", {})
+
+    employees = db.get_merchant_employees(merchant_id)
+    matched = None
+    for e in employees:
+        if name.lower() in e.get("name", "").lower():
+            matched = e
+            break
+
+    if not matched:
+        return ActionResult(False, f"{name} naam ka koi employee nahi mila.", {})
+
+    # Record advance
+    db.insert("transactions", {
+        "merchant_id": merchant_id,
+        "amount": float(amount),
+        "type": "expense",
+        "category": "Employee Advance",
+        "description": f"Advance to {matched['name']}",
+        "payment_mode": "cash",
+        "source": "employee_advance",
+    })
+
+    await realtime.emit_dashboard_refresh(merchant_id)
+
+    return ActionResult(
+        success=True,
+        response_text=f"{matched['name']} ko Rs {amount:,.0f} advance de diya gaya.",
+        data={"employee": matched["name"], "amount": amount},
+    )
+
+
+# ---------------------------------------------------------------------------
 # Fallback / Greeting
 # ---------------------------------------------------------------------------
 
