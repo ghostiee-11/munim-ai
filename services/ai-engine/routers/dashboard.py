@@ -7,8 +7,9 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, timedelta
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
+from config import get_settings
 from models import db
 from models.schemas import (
     CategorySummary,
@@ -36,6 +37,269 @@ def _aggregate_txns(txns: list[dict]) -> tuple[float, float]:
     income = sum(t["amount"] for t in txns if t.get("type") == "income")
     expense = sum(t["amount"] for t in txns if t.get("type") == "expense")
     return income, expense
+
+
+@router.get("/expense-optimization/{merchant_id}")
+async def expense_optimization(merchant_id: str):
+    """AI-powered expense optimization suggestions using Groq."""
+    import httpx
+    from datetime import timedelta
+    from collections import defaultdict
+
+    settings = get_settings()
+
+    # Get last 90 days expenses
+    ninety_days_ago = (date.today() - timedelta(days=90)).isoformat()
+    expenses = db.select_range(
+        "transactions",
+        filters={"merchant_id": merchant_id, "type": "expense"},
+        gte=("created_at", ninety_days_ago),
+    )
+
+    if not expenses:
+        return {"suggestions": [], "total_expense": 0, "recommendation_hi": "Abhi koi expense data nahi hai."}
+
+    # Group by category and vendor
+    cat_totals: dict[str, float] = defaultdict(float)
+    vendor_totals: dict[str, float] = defaultdict(float)
+    vendor_frequency: dict[str, int] = defaultdict(int)
+    monthly_expense: dict[str, float] = defaultdict(float)
+
+    for e in expenses:
+        amt = float(e.get("amount", 0))
+        cat = e.get("category", "Other") or "Other"
+        vendor = e.get("supplier_name", e.get("description", "")) or "Unknown"
+        month = str(e.get("created_at", ""))[:7]
+
+        cat_totals[cat] += amt
+        vendor_totals[vendor] += amt
+        vendor_frequency[vendor] += 1
+        monthly_expense[month] += amt
+
+    total_expense = sum(cat_totals.values())
+
+    # Get income for context
+    income_txns = db.select_range(
+        "transactions",
+        filters={"merchant_id": merchant_id, "type": "income"},
+        gte=("created_at", ninety_days_ago),
+    )
+    total_income = sum(float(t.get("amount", 0)) for t in income_txns)
+
+    # Build suggestions
+    suggestions = []
+
+    # Top expense categories
+    sorted_cats = sorted(cat_totals.items(), key=lambda x: -x[1])
+    top_cats = sorted_cats[:5]
+
+    # Vendors with multiple small orders (bulk opportunity)
+    for vendor, total in sorted(vendor_totals.items(), key=lambda x: -x[1])[:5]:
+        freq = vendor_frequency[vendor]
+        if freq >= 3 and total > 5000:
+            avg_order = total / freq
+            suggestions.append({
+                "type": "bulk_order",
+                "vendor": vendor,
+                "total_spent": round(total, 2),
+                "order_count": freq,
+                "avg_order": round(avg_order, 2),
+                "potential_saving": round(total * 0.08, 2),
+                "tip_hi": f"{vendor} se {freq} baar order kiya (avg Rs {avg_order:,.0f}). Ek saath bulk order se 5-10% bach sakta hai.",
+            })
+
+    # Category over-spending
+    expense_pct = round(total_expense / max(total_income, 1) * 100, 1)
+    if expense_pct > 60:
+        suggestions.append({
+            "type": "high_expense_ratio",
+            "expense_pct": expense_pct,
+            "tip_hi": f"Kharcha income ka {expense_pct}% hai. 50-60% se neeche rakhna chahiye.",
+        })
+
+    # Groq detailed recommendation
+    recommendation_hi = ""
+    try:
+        cat_summary = ", ".join([f"{c}: Rs {a:,.0f}" for c, a in top_cats])
+        vendor_summary = ", ".join([f"{v}: Rs {a:,.0f} ({vendor_frequency[v]}x)" for v, a in sorted(vendor_totals.items(), key=lambda x: -x[1])[:3]])
+
+        prompt = f"""Indian small business expense analysis (last 3 months):
+Total income: Rs {total_income:,.0f}
+Total expense: Rs {total_expense:,.0f} ({expense_pct}% of income)
+Top categories: {cat_summary}
+Top vendors: {vendor_summary}
+
+Give 3 specific Hindi expense optimization tips. Be practical for a small shopkeeper. Include potential savings in Rs."""
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post("https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {settings.groq_api_key}", "Content-Type": "application/json"},
+                json={"model": settings.groq_model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.4, "max_tokens": 300})
+        if resp.status_code == 200:
+            recommendation_hi = resp.json()["choices"][0]["message"]["content"].strip()
+    except Exception:
+        recommendation_hi = f"Total kharcha Rs {total_expense:,.0f} hai (income ka {expense_pct}%). Top category: {top_cats[0][0] if top_cats else 'N/A'}."
+
+    return {
+        "merchant_id": merchant_id,
+        "total_expense": round(total_expense, 2),
+        "total_income": round(total_income, 2),
+        "expense_pct": expense_pct,
+        "top_categories": [{"category": c, "amount": round(a, 2)} for c, a in top_cats],
+        "suggestions": suggestions,
+        "recommendation_hi": recommendation_hi,
+    }
+
+
+@router.get("/pnl-report/{merchant_id}")
+async def auto_pnl_report(merchant_id: str, month: int = Query(None), year: int = Query(None)):
+    """Generate monthly P&L report with Groq Hindi commentary."""
+    return await _generate_pnl(merchant_id, month, year)
+
+
+async def _generate_pnl(merchant_id: str, month=None, year=None):
+    import httpx
+    from collections import defaultdict
+
+    settings = get_settings()
+    today = date.today()
+    try:
+        rpt_month = int(month) if month is not None else today.month
+    except (TypeError, ValueError):
+        rpt_month = today.month
+    try:
+        rpt_year = int(year) if year is not None else today.year
+    except (TypeError, ValueError):
+        rpt_year = today.year
+
+    start = f"{rpt_year}-{rpt_month:02d}-01"
+    if rpt_month == 12:
+        end = f"{rpt_year + 1}-01-01"
+    else:
+        end = f"{rpt_year}-{rpt_month + 1:02d}-01"
+
+    txns = db.select_range(
+        "transactions",
+        filters={"merchant_id": merchant_id},
+        gte=("created_at", start),
+        lte=("created_at", end),
+    )
+
+    # Income breakdown
+    income_by_cat: dict[str, float] = defaultdict(float)
+    expense_by_cat: dict[str, float] = defaultdict(float)
+
+    for t in txns:
+        amt = float(t.get("amount", 0))
+        cat = t.get("category", "Other") or "Other"
+        if t.get("type") == "income":
+            income_by_cat[cat] += amt
+        elif t.get("type") == "expense":
+            expense_by_cat[cat] += amt
+
+    total_income = sum(income_by_cat.values())
+    total_expense = sum(expense_by_cat.values())
+    net_profit = total_income - total_expense
+    margin = round(net_profit / max(total_income, 1) * 100, 1)
+
+    # Previous month for comparison
+    if rpt_month == 1:
+        prev_start = f"{rpt_year - 1}-12-01"
+        prev_end = f"{rpt_year}-01-01"
+    else:
+        prev_start = f"{rpt_year}-{rpt_month - 1:02d}-01"
+        prev_end = start
+
+    prev_txns = db.select_range(
+        "transactions",
+        filters={"merchant_id": merchant_id},
+        gte=("created_at", prev_start),
+        lte=("created_at", prev_end),
+    )
+    prev_income = sum(float(t.get("amount", 0)) for t in prev_txns if t.get("type") == "income")
+    prev_expense = sum(float(t.get("amount", 0)) for t in prev_txns if t.get("type") == "expense")
+    prev_profit = prev_income - prev_expense
+
+    income_growth = round((total_income - prev_income) / max(prev_income, 1) * 100, 1)
+    profit_growth = round((net_profit - prev_profit) / max(abs(prev_profit), 1) * 100, 1)
+
+    # Top income and expense categories
+    top_income = sorted(income_by_cat.items(), key=lambda x: -x[1])[:5]
+    top_expense = sorted(expense_by_cat.items(), key=lambda x: -x[1])[:5]
+
+    # Most profitable item (highest income category minus related expense)
+    most_profitable = top_income[0][0] if top_income else "N/A"
+
+    # Groq commentary
+    import calendar
+    month_name = calendar.month_name[rpt_month]
+    commentary_hi = ""
+    try:
+        income_cats = ", ".join([f"{c}: Rs {a:,.0f}" for c, a in top_income])
+        expense_cats = ", ".join([f"{c}: Rs {a:,.0f}" for c, a in top_expense])
+
+        prompt = f"""{month_name} {rpt_year} P&L for Indian small business:
+Income: Rs {total_income:,.0f} (prev month: Rs {prev_income:,.0f}, growth: {income_growth}%)
+Expense: Rs {total_expense:,.0f} (prev: Rs {prev_expense:,.0f})
+Profit: Rs {net_profit:,.0f} (margin: {margin}%, growth: {profit_growth}%)
+Top income: {income_cats}
+Top expense: {expense_cats}
+
+Write 3-4 line Hindi commentary for the shopkeeper. Be specific with numbers. Mention what went well, what needs attention, and one actionable tip."""
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post("https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {settings.groq_api_key}", "Content-Type": "application/json"},
+                json={"model": settings.groq_model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.4, "max_tokens": 300})
+        if resp.status_code == 200:
+            commentary_hi = resp.json()["choices"][0]["message"]["content"].strip()
+    except Exception:
+        commentary_hi = f"{month_name} mein Rs {total_income:,.0f} income, Rs {total_expense:,.0f} kharcha. Profit Rs {net_profit:,.0f} ({margin}% margin)."
+
+    return {
+        "merchant_id": merchant_id,
+        "period": f"{rpt_year}-{rpt_month:02d}",
+        "month_name": month_name,
+        "total_income": round(total_income, 2),
+        "total_expense": round(total_expense, 2),
+        "net_profit": round(net_profit, 2),
+        "margin_pct": margin,
+        "prev_income": round(prev_income, 2),
+        "prev_expense": round(prev_expense, 2),
+        "prev_profit": round(prev_profit, 2),
+        "income_growth_pct": income_growth,
+        "profit_growth_pct": profit_growth,
+        "income_breakdown": [{"category": c, "amount": round(a, 2)} for c, a in top_income],
+        "expense_breakdown": [{"category": c, "amount": round(a, 2)} for c, a in top_expense],
+        "most_profitable": most_profitable,
+        "commentary_hi": commentary_hi,
+        "transaction_count": len(txns),
+    }
+
+
+@router.post("/send-pnl/{merchant_id}")
+async def send_pnl_whatsapp(merchant_id: str):
+    """Send monthly P&L summary via WhatsApp."""
+    from services.twilio_service import send_whatsapp
+
+    data = await _generate_pnl(merchant_id)
+
+    arrow = "+" if data['income_growth_pct'] > 0 else ""
+    msg = f"P&L Report - {data['month_name']}\n\n"
+    msg += f"Income: Rs {data['total_income']:,.0f}"
+    if data['income_growth_pct'] != 0:
+        msg += f" ({arrow}{data['income_growth_pct']}%)"
+    msg += f"\nExpense: Rs {data['total_expense']:,.0f}"
+    msg += f"\nProfit: Rs {data['net_profit']:,.0f} ({data['margin_pct']}%)"
+    if data.get('commentary_hi'):
+        msg += f"\n\n{data['commentary_hi'][:500]}"
+    msg += "\n\n- MunimAI"
+
+    try:
+        result = await send_whatsapp(to="+917725014797", body=msg)
+        return {"sent": True, "message": msg}
+    except Exception as e:
+        return {"sent": False, "message": msg, "error": str(e)}
 
 
 @router.get("/{merchant_id}")

@@ -160,6 +160,61 @@ async def twilio_webhook(request: Request):
                 items = data.get("items", [])
                 items_count = len(items)
 
+                # --- Auto-detect income vs expense ---
+                # If the merchant's name/business appears as seller on the receipt, it's income (sale)
+                # If the merchant is the buyer (purchasing from vendor), it's expense (purchase)
+                txn_type = "expense"
+                txn_type_label = "Expense (Purchase)"
+                try:
+                    merchant_info = db.select("merchants", filters={"id": merchant_id}, single=True)
+                    merchant_name = (merchant_info or {}).get("business_name", "").lower().strip()
+                    seller_name = (data.get("seller", "") or data.get("from", "") or "").lower().strip()
+                    buyer_name = (data.get("buyer", "") or data.get("to", "") or data.get("bill_to", "") or "").lower().strip()
+                    vendor_lower = vendor.lower().strip()
+
+                    if merchant_name and (merchant_name in seller_name or seller_name in merchant_name):
+                        txn_type = "income"
+                        txn_type_label = "Income (Sale)"
+                    elif merchant_name and (merchant_name in buyer_name or buyer_name in merchant_name):
+                        txn_type = "expense"
+                        txn_type_label = "Expense (Purchase)"
+                    # Default: if vendor is different from merchant, it's a purchase (expense)
+                except Exception:
+                    pass
+
+                # --- Auto-categorize based on item names ---
+                category_keywords = {
+                    "Textile": ["saree", "silk", "cotton", "fabric", "dupatta", "blouse", "kurta", "suit", "cloth"],
+                    "Electronics": ["phone", "mobile", "laptop", "charger", "cable", "battery", "led", "tv"],
+                    "Grocery": ["rice", "dal", "atta", "sugar", "oil", "tea", "masala", "salt", "flour"],
+                    "Hardware": ["pipe", "wire", "cement", "nail", "screw", "paint", "tool"],
+                    "Stationery": ["pen", "paper", "notebook", "file", "folder", "ink"],
+                    "Medicine": ["tablet", "syrup", "capsule", "medicine", "pharma"],
+                }
+                detected_category = "General"
+                all_item_names = " ".join(it.get("name", "").lower() for it in items)
+                for cat, keywords in category_keywords.items():
+                    if any(kw in all_item_names for kw in keywords):
+                        detected_category = cat
+                        break
+
+                # --- Calculate GST from extracted data ---
+                subtotal = float(data.get("subtotal", 0) or 0)
+                gst_amount = float(data.get("gst", 0) or data.get("tax", 0) or data.get("gst_amount", 0) or 0)
+                if not subtotal and total:
+                    # Estimate: if GST not explicitly found, back-calculate assuming 5% default
+                    if gst_amount > 0:
+                        subtotal = round(float(total) - gst_amount, 2)
+                    else:
+                        # Try to sum item amounts for subtotal
+                        item_total = sum(float(it.get("amount", 0) or 0) for it in items)
+                        if item_total > 0 and abs(item_total - float(total)) > 1:
+                            subtotal = item_total
+                            gst_amount = round(float(total) - item_total, 2)
+                        else:
+                            subtotal = float(total)
+                            gst_amount = 0
+
                 # Auto-create inventory items from extracted invoice
                 inventory_created = 0
                 inventory_updated = 0
@@ -183,14 +238,18 @@ async def twilio_webhook(request: Request):
                                 break
 
                         if matched:
-                            new_qty = int((matched.get("current_qty", 0) or 0) + qty)
+                            # For purchases (expense), add stock; for sales (income), subtract
+                            if txn_type == "expense":
+                                new_qty = int((matched.get("current_qty", 0) or 0) + qty)
+                            else:
+                                new_qty = max(0, int((matched.get("current_qty", 0) or 0) - qty))
                             db.update("inventory", matched["id"], {"current_qty": new_qty})
                             inventory_updated += 1
                         else:
                             db.insert("inventory", {
                                 "merchant_id": merchant_id,
                                 "item_name": item_name,
-                                "category": "",
+                                "category": detected_category,
                                 "current_qty": qty,
                                 "unit": raw_item.get("unit", "pcs"),
                                 "cost_price": cost_price,
@@ -202,35 +261,62 @@ async def twilio_webhook(request: Request):
                 except Exception as inv_err:
                     logger.warning("Inventory auto-create from WhatsApp failed: %s", inv_err)
 
-                # Log as expense transaction
+                # Log transaction with auto-detected type
                 try:
                     db.insert("transactions", {
                         "merchant_id": merchant_id,
                         "amount": float(total) if total else 0,
-                        "type": "expense",
-                        "category": "Invoice",
-                        "description": f"Invoice from {vendor} via WhatsApp",
+                        "type": txn_type,
+                        "category": detected_category,
+                        "description": f"{'Invoice from' if txn_type == 'expense' else 'Sale to'} {vendor} via WhatsApp",
                         "source": "whatsapp_ocr",
                     })
                 except Exception:
                     pass
 
-                # Build reply
-                items_text = "\n".join(
-                    f"  {i+1}. {it.get('name','')} x{it.get('qty',1)} = Rs {it.get('amount',0):,.0f}"
-                    for i, it in enumerate(items)
-                )
-                inv_text = ""
-                if inventory_created or inventory_updated:
-                    inv_text = f"\nInventory: {inventory_created} naye items add, {inventory_updated} updated"
+                # Record GST ITC/liability
+                gst_record_type = "itc" if txn_type == "expense" else "liability"
+                try:
+                    if gst_amount > 0:
+                        db.insert("transactions", {
+                            "merchant_id": merchant_id,
+                            "amount": gst_amount,
+                            "type": "gst_" + gst_record_type,
+                            "category": "GST",
+                            "description": f"GST {gst_record_type.upper()} from {vendor} receipt",
+                            "source": "whatsapp_ocr",
+                        })
+                except Exception:
+                    pass
+
+                # Build items summary (compact: "Name xQty" grouped)
+                items_summary_parts = []
+                for it in items:
+                    it_name = it.get("name", "Item")
+                    it_qty = it.get("qty", 1)
+                    items_summary_parts.append(f"{it_name} x{it_qty}")
+                items_summary = ", ".join(items_summary_parts)
+
+                # Build rich reply
+                gst_label = "GST ITC" if txn_type == "expense" else "GST Liability"
+                auto_parts = [f"- {txn_type_label} transaction logged"]
+                if inventory_created + inventory_updated > 0:
+                    auto_parts.append(f"- {inventory_created + inventory_updated} inventory items updated")
+                if gst_amount > 0:
+                    auto_parts.append(f"- {gst_label}: Rs {gst_amount:,.0f} recorded")
+                auto_created = "\n".join(auto_parts)
 
                 reply_text = (
-                    f"Invoice processed!\n"
+                    f"Receipt processed!\n"
+                    f"Type: {txn_type_label}\n"
                     f"Vendor: {vendor}\n"
-                    f"Items ({items_count}):\n{items_text}\n"
-                    f"Total: Rs {total:,.0f}\n"
-                    f"{inv_text}\n"
-                    f"Transaction logged as expense."
+                    f"Items: {items_count} ({items_summary})\n"
+                    f"Subtotal: Rs {subtotal:,.0f}\n"
+                    f"GST: Rs {gst_amount:,.0f}\n"
+                    f"Total: Rs {float(total):,.0f}\n\n"
+                    f"Auto-created:\n"
+                    f"{auto_created}\n\n"
+                    f"Reply \"undo\" to reverse."
                 )
             else:
                 reply_text = "Image mili, lekin invoice data extract nahi ho paya. Kripya clear photo bhejein."

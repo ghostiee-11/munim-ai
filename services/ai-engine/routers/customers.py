@@ -83,6 +83,95 @@ def _churn_probability(days_since_last: int) -> float:
 # ---------------------------------------------------------------------------
 
 
+@router.get("/predictions/{merchant_id}")
+async def predict_customer_visits(merchant_id: str):
+    """Predict which customers are likely to visit in next 3 days based on patterns."""
+    customers = db.get_merchant_customers(merchant_id)
+
+    try:
+        transactions = db.select("transactions", filters={"merchant_id": merchant_id, "type": "income"}, limit=5000)
+    except Exception:
+        transactions = []
+
+    # Group transactions by customer with dates
+    from collections import defaultdict
+    customer_visits: dict[str, list[str]] = defaultdict(list)
+    customer_items: dict[str, list[str]] = defaultdict(list)
+
+    for t in transactions:
+        name = (t.get("customer_name") or "").strip()
+        if not name:
+            continue
+        dt = str(t.get("created_at", ""))[:10]
+        if dt:
+            customer_visits[name].append(dt)
+        cat = t.get("category", "")
+        if cat:
+            customer_items[name].append(cat)
+
+    predictions = []
+    today = date.today()
+
+    for c in customers:
+        name = c.get("name", "")
+        visits = sorted(set(customer_visits.get(name, [])))
+        if len(visits) < 2:
+            continue
+
+        # Calculate average gap between visits
+        gaps = []
+        for i in range(1, len(visits)):
+            try:
+                d1 = date.fromisoformat(visits[i-1])
+                d2 = date.fromisoformat(visits[i])
+                gaps.append((d2 - d1).days)
+            except Exception:
+                continue
+
+        if not gaps:
+            continue
+
+        avg_gap = sum(gaps) / len(gaps)
+        last_visit = visits[-1]
+        try:
+            last_date = date.fromisoformat(last_visit)
+            days_since = (today - last_date).days
+            expected_next = last_date + timedelta(days=int(avg_gap))
+            days_until = (expected_next - today).days
+        except Exception:
+            continue
+
+        # Predict if likely to visit in next 3 days
+        if -2 <= days_until <= 3:
+            # Get favorite items
+            items = customer_items.get(name, [])
+            top_items = [item for item, _ in Counter(items).most_common(2)]
+
+            predictions.append({
+                "name": name,
+                "phone": c.get("phone", ""),
+                "avg_visit_gap_days": round(avg_gap, 1),
+                "last_visit": last_visit,
+                "days_since_last": days_since,
+                "predicted_next": expected_next.isoformat(),
+                "days_until": days_until,
+                "confidence": round(min(0.95, len(visits) / 10), 2),
+                "favorite_items": top_items,
+                "total_visits": len(visits),
+                "alert_hi": f"{name} ji {'aaj' if days_until == 0 else f'{abs(days_until)} din mein'} aa sakte hain. Favorite: {', '.join(top_items) if top_items else 'General'}",
+            })
+
+    # Sort by days_until (soonest first)
+    predictions.sort(key=lambda p: p["days_until"])
+
+    return {
+        "merchant_id": merchant_id,
+        "predictions": predictions[:10],
+        "count": len(predictions),
+        "date": today.isoformat(),
+    }
+
+
 @router.get("/{merchant_id}/analysis")
 async def get_customer_analysis(merchant_id: str):
     """Full RFM analysis with Hindi alerts via customer_agent."""
