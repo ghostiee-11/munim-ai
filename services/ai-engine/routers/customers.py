@@ -5,6 +5,7 @@ Customers router -- customer intelligence, at-risk detection, and winback.
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from datetime import date, timedelta
 
 from fastapi import APIRouter, HTTPException, Query
@@ -76,6 +77,50 @@ def _churn_probability(days_since_last: int) -> float:
     return min(round(0.70 + (days_since_last - 60) / 120 * 0.29, 2), 0.99)
 
 
+# ---------------------------------------------------------------------------
+# New endpoints with static paths -- must be registered BEFORE /{merchant_id}
+# to avoid FastAPI treating the path segment as a merchant_id parameter.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{merchant_id}/analysis")
+async def get_customer_analysis(merchant_id: str):
+    """Full RFM analysis with Hindi alerts via customer_agent."""
+    from services.agents.customer_agent import analyze_customers
+    customers = db.get_merchant_customers(merchant_id)
+    transactions = db.select("transactions", filters={"merchant_id": merchant_id}, limit=10000)
+    result = await analyze_customers(merchant_id, customers, transactions or [])
+    return result
+
+
+@router.get("/{merchant_id}/churn")
+async def get_churn_detection(merchant_id: str):
+    """ML-style churn detection with Hindi reasons."""
+    from services.agents.customer_agent import detect_churn
+    churn_list = await detect_churn(merchant_id)
+    return {"merchant_id": merchant_id, "at_risk": churn_list, "count": len(churn_list)}
+
+
+@router.get("/{merchant_id}/winback-stats")
+async def get_winback_stats(merchant_id: str):
+    """Real winback campaign analytics from customer_outreach table."""
+    try:
+        outreach = db.select("customer_outreach", filters={"merchant_id": merchant_id})
+    except Exception:
+        outreach = []
+    sent = len(outreach)
+    # Count returned = customers who had outreach AND later had a transaction
+    returned = len([o for o in outreach if o.get("response") == "returned"])
+    revenue = sum(float(o.get("revenue_recovered", 0) or 0) for o in outreach)
+    success_rate = round(returned / max(sent, 1) * 100)
+    return {"campaigns_sent": sent, "customers_returned": returned, "revenue_recovered": revenue, "success_rate": success_rate}
+
+
+# ---------------------------------------------------------------------------
+# Existing endpoints
+# ---------------------------------------------------------------------------
+
+
 @router.get("/{merchant_id}", response_model=list[CustomerResponse])
 async def list_customers(
     merchant_id: str,
@@ -109,14 +154,16 @@ async def list_enriched_customers(
     except Exception:
         transactions = []
 
-    # Build a lookup: customer_name -> aggregated stats
+    # Build a lookup: customer_name -> aggregated stats + categories
     txn_by_name: dict[str, dict] = {}
+    categories_by_name: dict[str, list[str]] = {}
     for txn in (transactions or []):
         cname = (txn.get("customer_name") or "").strip()
         if not cname:
             continue
         if cname not in txn_by_name:
             txn_by_name[cname] = {"count": 0, "total": 0.0, "last_date": None}
+            categories_by_name[cname] = []
         txn_by_name[cname]["count"] += 1
         txn_by_name[cname]["total"] += float(txn.get("amount") or txn.get("total_amount") or 0)
         txn_date = txn.get("date") or txn.get("created_at") or txn.get("transaction_date")
@@ -125,6 +172,19 @@ async def list_enriched_customers(
             existing = txn_by_name[cname]["last_date"]
             if not existing or txn_date_str > existing:
                 txn_by_name[cname]["last_date"] = txn_date_str
+        # Track category for favorite items
+        cat = (txn.get("category") or "").strip()
+        if cat:
+            categories_by_name[cname].append(cat)
+
+    # Compute top 2-3 most common categories per customer
+    favorite_items_by_name: dict[str, list[str]] = {}
+    for cname, cats in categories_by_name.items():
+        if cats:
+            counter = Counter(cats)
+            favorite_items_by_name[cname] = [item for item, _ in counter.most_common(3)]
+        else:
+            favorite_items_by_name[cname] = []
 
     for c in customers:
         cid = c.get("id", "")
@@ -179,7 +239,7 @@ async def list_enriched_customers(
             churn_probability=churn_prob,
             days_since_last_visit=days_since,
             visit_count=txn_count,
-            favorite_items=[],
+            favorite_items=favorite_items_by_name.get(name, []),
         ))
 
     return enriched
@@ -241,6 +301,38 @@ async def get_at_risk_customers(merchant_id: str):
     risk_order = {"high": 0, "medium": 1, "low": 2}
     at_risk.sort(key=lambda x: (risk_order.get(x.risk_level, 3), -x.days_since_last_visit))
 
+    # For top 5 at-risk customers, generate personalized Hindi action suggestions via Groq
+    try:
+        from groq import AsyncGroq
+        from config import get_settings
+        settings = get_settings()
+        if settings.groq_api_key and at_risk:
+            client = AsyncGroq(api_key=settings.groq_api_key)
+            for entry in at_risk[:5]:
+                try:
+                    prompt = (
+                        f"Customer: {entry.name}, {entry.days_since_last_visit} din se nahi aaye, "
+                        f"avg monthly spend Rs {entry.avg_monthly_spend:.0f}, risk level: {entry.risk_level}. "
+                        f"Ek chhota Hindi mein action suggestion do shopkeeper ke liye (1 line, under 120 chars). "
+                        f"Sirf Hindi mein likho."
+                    )
+                    resp = await client.chat.completions.create(
+                        model=settings.groq_model,
+                        messages=[
+                            {"role": "system", "content": "You suggest winback actions in Hindi for Indian shopkeepers. Be concise."},
+                            {"role": "user", "content": prompt},
+                        ],
+                        temperature=0.7,
+                        max_tokens=100,
+                    )
+                    hindi_action = resp.choices[0].message.content.strip()
+                    if hindi_action:
+                        entry.suggested_action = hindi_action
+                except Exception:
+                    pass  # keep existing English action
+    except Exception:
+        pass  # Groq unavailable — keep existing English actions
+
     return at_risk
 
 
@@ -264,15 +356,31 @@ async def winback_customer(
 
     name = customer.get("name", "Customer")
 
-    # Generate offer text if not provided
+    # Generate offer text: try LLM-generated Hindi message first, then fall back to hardcoded
     offer_text = body.offer_text
+    if not offer_text:
+        try:
+            from services.agents.customer_agent import generate_winback
+            winback_result = await generate_winback(merchant_id, name)
+            offer_text = winback_result.get("message", "")
+        except Exception as e:
+            logger.warning("LLM winback generation failed, using fallback: %s", e)
+            offer_text = ""
+
     if not offer_text:
         offer_text = (
             f"Namaste {name} ji! Aapko bohot miss kar rahe hain. "
             f"Aapke liye special 10% discount ready hai. Jaldi aayein!"
         )
 
-    # In production: call WhatsApp/SMS service
+    # Send via WhatsApp
+    try:
+        from services.twilio_service import send_whatsapp
+        await send_whatsapp(to=phone, body=offer_text)
+        logger.info("WhatsApp sent to %s for winback %s", phone, customer_id)
+    except Exception as e:
+        logger.error("WhatsApp send failed for %s: %s", customer_id, e)
+
     logger.info("Winback %s via %s to %s: %s", customer_id, body.channel, phone, offer_text)
 
     # Record the outreach

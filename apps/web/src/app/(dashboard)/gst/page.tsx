@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { formatINR, DEMO_MERCHANT_ID, API_BASE_URL } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/common/Skeleton";
@@ -23,6 +23,7 @@ import {
   Calculator,
   Lightbulb,
   Sparkles,
+  MessageCircle,
 } from "lucide-react";
 
 // ---------- Types ----------
@@ -203,6 +204,14 @@ export default function GSTPage() {
   const [optimizationTips, setOptimizationTips] = useState<OptimizationTip[]>([]);
   const [tipsLoading, setTipsLoading] = useState(true);
 
+  // GST Chatbot state
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatMessages, setChatMessages] = useState<{role: "user" | "bot"; text: string}[]>([
+    { role: "bot", text: "Namaste! Main aapka GST expert hoon. GST se related koi bhi sawaal puchein - rates, HSN codes, filing, ITC, penalties - sab samjha dunga!" }
+  ]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+
   const fetchGST = async () => {
     setLoading(true);
     setFetchError(null);
@@ -249,6 +258,27 @@ export default function GSTPage() {
       console.error("Optimization tips fetch failed:", err);
     } finally {
       setTipsLoading(false);
+    }
+  };
+
+  const handleChatSend = async () => {
+    const q = chatInput.trim();
+    if (!q || chatLoading) return;
+    setChatMessages((prev) => [...prev, { role: "user", text: q }]);
+    setChatInput("");
+    setChatLoading(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/gst/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ merchant_id: DEMO_MERCHANT_ID, question: q }),
+      });
+      const data = await res.json();
+      setChatMessages((prev) => [...prev, { role: "bot", text: data.answer || "Koi error aaya. Dobara try karein." }]);
+    } catch {
+      setChatMessages((prev) => [...prev, { role: "bot", text: "Network error. Kripya dobara try karein." }]);
+    } finally {
+      setChatLoading(false);
     }
   };
 
@@ -972,6 +1002,106 @@ export default function GSTPage() {
           </motion.div>
         )}
       </motion.div>
+
+      {/* GST Chatbot */}
+      <div className="fixed bottom-6 right-6 z-40">
+        <AnimatePresence>
+          {chatOpen && (
+            <motion.div
+              initial={{ opacity: 0, y: 20, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 20, scale: 0.95 }}
+              className="mb-3 w-80 bg-white rounded-2xl shadow-2xl border border-gray-200 overflow-hidden"
+            >
+              {/* Chat header */}
+              <div className="bg-gradient-to-r from-[#002E6E] to-[#0052B4] px-4 py-3 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-blue-300" />
+                  <span className="text-sm font-semibold text-white">GST Expert</span>
+                </div>
+                <button onClick={() => setChatOpen(false)} className="text-blue-200 hover:text-white">
+                  <ChevronDown className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Messages */}
+              <div className="h-72 overflow-y-auto p-3 space-y-2">
+                {chatMessages.map((msg, i) => (
+                  <div key={i} className={cn("flex", msg.role === "user" ? "justify-end" : "justify-start")}>
+                    <div className={cn(
+                      "max-w-[85%] px-3 py-2 rounded-xl text-xs leading-relaxed",
+                      msg.role === "user"
+                        ? "bg-[#00BAF2] text-white rounded-br-sm"
+                        : "bg-gray-100 text-gray-800 rounded-bl-sm"
+                    )}>
+                      {msg.text}
+                    </div>
+                  </div>
+                ))}
+                {chatLoading && (
+                  <div className="flex justify-start">
+                    <div className="bg-gray-100 px-3 py-2 rounded-xl rounded-bl-sm">
+                      <div className="flex gap-1">
+                        <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                        <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                        <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Input */}
+              <div className="border-t border-gray-100 p-2 flex gap-2">
+                <input
+                  type="text"
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleChatSend()}
+                  placeholder="GST ka sawaal puchein..."
+                  className="flex-1 px-3 py-2 text-xs border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00BAF2]/30"
+                />
+                <button
+                  onClick={handleChatSend}
+                  disabled={chatLoading || !chatInput.trim()}
+                  className="p-2 bg-[#00BAF2] text-white rounded-xl hover:bg-[#00BAF2]/90 disabled:opacity-50"
+                >
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Quick questions */}
+              <div className="px-2 pb-2 flex gap-1 flex-wrap">
+                {["ITC kya hota hai?", "Late filing penalty?", "Mera GST rate kya hai?"].map((q) => (
+                  <button
+                    key={q}
+                    onClick={() => { setChatInput(q); }}
+                    className="text-[9px] px-2 py-1 bg-gray-50 border border-gray-200 rounded-lg text-gray-500 hover:bg-gray-100"
+                  >
+                    {q}
+                  </button>
+                ))}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Floating button */}
+        <motion.button
+          whileTap={{ scale: 0.95 }}
+          onClick={() => setChatOpen(!chatOpen)}
+          className={cn(
+            "w-12 h-12 rounded-full shadow-lg flex items-center justify-center transition-colors",
+            chatOpen ? "bg-gray-600" : "bg-gradient-to-r from-[#002E6E] to-[#00BAF2]"
+          )}
+        >
+          {chatOpen ? (
+            <ChevronDown className="w-5 h-5 text-white" />
+          ) : (
+            <MessageCircle className="w-5 h-5 text-white" />
+          )}
+        </motion.button>
+      </div>
 
       {/* Mock Filing Flow Modal */}
       {showFilingFlow && (

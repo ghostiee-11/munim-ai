@@ -24,6 +24,33 @@ from services import realtime
 
 logger = logging.getLogger(__name__)
 
+
+async def _ensure_customer(merchant_id: str, customer_name: str, phone: str = None):
+    """Auto-create customer record if it doesn't exist."""
+    if not customer_name or not customer_name.strip():
+        return
+    try:
+        existing = db.select("customers", filters={"merchant_id": merchant_id})
+        name_lower = customer_name.strip().lower()
+        for c in existing:
+            if c.get("name", "").strip().lower() == name_lower:
+                # Update last_visit
+                db.update("customers", c["id"], {"last_visit": datetime.now().isoformat()})
+                return
+        # Create new customer
+        db.insert("customers", {
+            "merchant_id": merchant_id,
+            "name": customer_name.strip(),
+            "phone": phone or "",
+            "total_visits": 1,
+            "total_spent": 0,
+            "last_visit": datetime.now().isoformat(),
+        })
+        logger.info("Auto-created customer: %s", customer_name)
+    except Exception as e:
+        logger.debug("Customer auto-create failed (table may not exist): %s", e)
+
+
 # Valid categories for Groq recategorization
 _VALID_CATEGORIES = frozenset([
     "saree", "textile", "stock", "rent", "salary", "utility",
@@ -208,6 +235,9 @@ async def _add_income(merchant_id: str, entities: dict[str, Any]) -> ActionResul
 
     await realtime.emit_transaction_created(merchant_id, txn)
     await realtime.emit_dashboard_refresh(merchant_id)
+
+    # Auto-create / update customer record
+    await _ensure_customer(merchant_id, entities.get("customer_name", ""), entities.get("phone"))
 
     party_str = f" {customer_name} se" if customer_name else ""
     mode_str = f" ({payment_mode})" if payment_mode else ""
@@ -875,6 +905,9 @@ async def _create_invoice(merchant_id: str, entities: dict[str, Any]) -> ActionR
         })
 
         await realtime.emit_dashboard_refresh(merchant_id)
+
+        # Auto-create / update customer record
+        await _ensure_customer(merchant_id, customer_name, entities.get("phone"))
 
         return ActionResult(
             success=True,
