@@ -821,28 +821,31 @@ function PaymentModal({
 // ---------- Main Page ----------
 
 export default function AutoPayPage() {
-  const [payments, setPayments] = useState<RecurringPayment[]>(DEMO_PAYMENTS);
+  const [payments, setPayments] = useState<RecurringPayment[]>([]);
   const [history, setHistory] = useState<PaymentExecution[]>(DEMO_HISTORY);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingPayment, setEditingPayment] = useState<RecurringPayment | null>(null);
-  const [activeTab, setActiveTab] = useState<"upcoming" | "all" | "history">("upcoming");
+  const [activeTab, setActiveTab] = useState<"upcoming" | "all" | "history">("all");
 
-  // Fetch from API on mount (fallback to demo data)
-  useEffect(() => {
-    async function fetchPayments() {
-      try {
-        const res = await fetch(`${API_BASE_URL}/recurring/${DEMO_MERCHANT_ID}`);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.length > 0) setPayments(data);
-        }
-      } catch {
-        // Use demo data
+  // Fetch from API — show API data + demo data combined
+  const fetchPayments = async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/recurring/${DEMO_MERCHANT_ID}`);
+      if (res.ok) {
+        const data: RecurringPayment[] = await res.json();
+        setPayments(data);
       }
+    } catch {
+      // API unavailable, show empty
+      setPayments(DEMO_PAYMENTS);
     }
+  };
+
+  useEffect(() => {
+    fetchPayments();
     async function fetchHistory() {
       try {
-        const res = await fetch(`${API_BASE_URL}/recurring/${DEMO_MERCHANT_ID}/history`);
+        const res = await fetch(`${API_BASE_URL}/api/recurring/${DEMO_MERCHANT_ID}/history`);
         if (res.ok) {
           const data = await res.json();
           if (data.length > 0) setHistory(data);
@@ -851,8 +854,13 @@ export default function AutoPayPage() {
         // Use demo data
       }
     }
-    fetchPayments();
     fetchHistory();
+
+    // Refetch every 5 seconds to catch new autopays from vendors page
+    const interval = setInterval(fetchPayments, 5000);
+    const onFocus = () => fetchPayments();
+    window.addEventListener("focus", onFocus);
+    return () => { clearInterval(interval); window.removeEventListener("focus", onFocus); };
   }, []);
 
   // Compute upcoming payments (next 7 days)
@@ -887,7 +895,7 @@ export default function AutoPayPage() {
   // Handlers
   const handlePayNow = async (payment: RecurringPayment) => {
     try {
-      await fetch(`${API_BASE_URL}/recurring/${payment.id}/execute`, { method: "POST" });
+      await fetch(`${API_BASE_URL}/api/recurring/${payment.id}/execute`, { method: "POST" });
     } catch {
       // Demo mode
     }
@@ -916,7 +924,7 @@ export default function AutoPayPage() {
 
   const handleSkip = async (payment: RecurringPayment) => {
     try {
-      await fetch(`${API_BASE_URL}/recurring/${payment.id}/approve`, {
+      await fetch(`${API_BASE_URL}/api/recurring/${payment.id}/approve`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "skip" }),
@@ -950,7 +958,7 @@ export default function AutoPayPage() {
         prev.map((p) => (p.id === editingPayment.id ? { ...p, ...data } : p))
       );
       try {
-        await fetch(`${API_BASE_URL}/recurring/${editingPayment.id}`, {
+        await fetch(`${API_BASE_URL}/api/recurring/${editingPayment.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(data),
@@ -979,7 +987,7 @@ export default function AutoPayPage() {
       };
       setPayments((prev) => [newPayment, ...prev]);
       try {
-        await fetch(`${API_BASE_URL}/recurring/`, {
+        await fetch(`${API_BASE_URL}/api/recurring/`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ ...data, merchant_id: DEMO_MERCHANT_ID }),
@@ -991,16 +999,22 @@ export default function AutoPayPage() {
   };
 
   const handleDelete = async (payment: RecurringPayment) => {
-    setPayments((prev) => prev.map((p) => (p.id === payment.id ? { ...p, is_active: false } : p)));
+    if (!confirm(`Delete ${payment.name}?`)) return;
     try {
-      await fetch(`${API_BASE_URL}/recurring/${payment.id}`, { method: "DELETE" });
+      await fetch(`${API_BASE_URL}/api/recurring/${payment.id}`, { method: "DELETE" });
     } catch {}
+    await fetchPayments(); // Refetch from Supabase
   };
 
-  const handleToggle = (payment: RecurringPayment) => {
-    setPayments((prev) =>
-      prev.map((p) => (p.id === payment.id ? { ...p, is_active: !p.is_active } : p))
-    );
+  const handleToggle = async (payment: RecurringPayment) => {
+    try {
+      await fetch(`${API_BASE_URL}/api/recurring/${payment.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ is_active: !payment.is_active }),
+      });
+    } catch {}
+    await fetchPayments(); // Refetch from Supabase
   };
 
   return (
@@ -1142,6 +1156,7 @@ export default function AutoPayPage() {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -10 }}
           >
+            <p className="text-xs text-gray-400 mb-3">{payments.length} payments total</p>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               {payments.map((p) => (
                 <PaymentCard

@@ -110,13 +110,8 @@ class ApproveRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# In-memory stores (production would use Supabase)
+# All data stored in Supabase `recurring_payments` table. No in-memory stores.
 # ---------------------------------------------------------------------------
-
-_recurring_store: dict[str, dict] = {}
-_execution_store: dict[str, dict] = {}
-# Map from merchant_id to their most recent pending execution
-_pending_approvals: dict[str, str] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +168,6 @@ async def check_due_payments(merchant_id: str):
 async def create_recurring(body: RecurringCreate):
     """Create a new recurring payment schedule."""
     record = {
-        "id": str(uuid4()),
         "merchant_id": body.merchant_id,
         "name": body.name,
         "amount": body.amount,
@@ -192,16 +186,10 @@ async def create_recurring(body: RecurringCreate):
         "created_at": datetime.now().isoformat(),
     }
 
-    # Try Supabase first, fallback to in-memory
-    try:
-        from models import db
-        saved = db.insert("recurring_payments", record)
-        logger.info("Recurring payment created in DB: %s", saved.get("id"))
-        return saved
-    except Exception:
-        _recurring_store[record["id"]] = record
-        logger.info("Recurring payment created in memory: %s", record["id"])
-        return record
+    from models import db
+    saved = db.insert("recurring_payments", record)
+    logger.info("Recurring payment created in DB: %s", saved.get("id"))
+    return saved
 
 
 @router.get("/{merchant_id}", response_model=list[RecurringResponse])
@@ -210,21 +198,12 @@ async def list_recurring(
     active_only: bool = Query(True, description="Only show active schedules"),
 ):
     """List recurring payment schedules for a merchant."""
-    # Try Supabase first
-    try:
-        from models import db
-        filters = {"merchant_id": merchant_id}
-        if active_only:
-            filters["is_active"] = True
-        records = db.select("recurring_payments", filters=filters, order_by="created_at", order_desc=True)
-        return records
-    except Exception:
-        # Fallback to in-memory
-        results = [
-            r for r in _recurring_store.values()
-            if r["merchant_id"] == merchant_id and (not active_only or r.get("is_active", True))
-        ]
-        return sorted(results, key=lambda x: x["created_at"], reverse=True)
+    from models import db
+    filters = {"merchant_id": merchant_id}
+    if active_only:
+        filters["is_active"] = True
+    records = db.select("recurring_payments", filters=filters, order_by="created_at", order_desc=True)
+    return records
 
 
 @router.get("/{merchant_id}/upcoming")

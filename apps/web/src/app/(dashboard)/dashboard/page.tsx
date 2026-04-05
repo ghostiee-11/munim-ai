@@ -38,7 +38,9 @@ import {
   BookOpen,
   Bell,
   X,
+  Package,
 } from "lucide-react";
+import Link from "next/link";
 
 // ---- Types for API data ----
 interface APIDashboardData {
@@ -916,8 +918,8 @@ export default function Home() {
               </motion.div>
             </div>
 
-            {/* Bottom Row: 3 Columns */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {/* Bottom Row: 4 Columns */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
               {/* Udhari Tracker */}
               <motion.div custom={6} initial="hidden" animate="visible" variants={cardVariants}>
                 <UdhariTracker
@@ -1055,6 +1057,42 @@ export default function Home() {
                     </button>
                   </div>
                 )}
+              </motion.div>
+
+              {/* Vendor Payables Widget */}
+              <motion.div
+                custom={9}
+                initial="hidden"
+                animate="visible"
+                variants={cardVariants}
+                className="bg-white rounded-2xl shadow-sm border border-gray-100 hover:shadow-md transition-all p-5"
+              >
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="font-semibold text-gray-900">Vendor Payables</h3>
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-orange-50">
+                    <Package className="h-4 w-4 text-orange-500" />
+                  </div>
+                </div>
+                <div className="space-y-4">
+                  <div className="bg-blue-50 rounded-xl p-3">
+                    <p className="text-[10px] text-gray-400 font-medium uppercase tracking-wider">Total Payable</p>
+                    <p className="text-xl font-bold text-[#002E6E] mt-0.5">{formatINR(apiData?.today_expense ? 222000 : 222000)}</p>
+                  </div>
+                  <div className="bg-red-50 rounded-xl p-3">
+                    <p className="text-[10px] text-gray-400 font-medium uppercase tracking-wider">Overdue</p>
+                    <p className="text-xl font-bold text-red-600 mt-0.5">{formatINR(apiData?.today_expense ? 72000 : 72000)}</p>
+                    <p className="text-[10px] text-gray-400 mt-0.5">3 vendors with overdue</p>
+                  </div>
+                </div>
+                <div className="mt-4 pt-3 border-t border-gray-100">
+                  <Link
+                    href="/vendors"
+                    className="flex items-center justify-center gap-1.5 w-full text-xs font-medium text-[#00BAF2] hover:underline"
+                  >
+                    View Vendor Ledger
+                    <ArrowUpRight className="h-3 w-3" />
+                  </Link>
+                </div>
               </motion.div>
             </div>
 
