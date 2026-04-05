@@ -199,56 +199,28 @@ const DEMO_ENRICHMENT: Record<string, Partial<Customer>> = {
 };
 
 function enrichWithDemoData(customers: Customer[]): Customer[] {
-  if (customers.length === 0) {
-    // No customers from API at all, use full fallback
-    return CUSTOMERS_FALLBACK;
-  }
-
-  // Try to match by first name (lowercase), otherwise assign from a pool
-  const demoKeys = Object.keys(DEMO_ENRICHMENT);
-  let demoIdx = 0;
+  if (customers.length === 0) return CUSTOMERS_FALLBACK;
 
   return customers.map((c) => {
     const nameLower = c.name.toLowerCase();
-    // Try exact first-name match
-    const matchKey = demoKeys.find((k) => nameLower.includes(k));
-    if (matchKey) {
+    const matchKey = Object.keys(DEMO_ENRICHMENT).find((k) => nameLower.includes(k));
+    if (matchKey && c.total_spent === 0) {
       const demo = DEMO_ENRICHMENT[matchKey];
-      const totalSpent = demo.total_spent ?? 0;
-      const visitCount = demo.visit_count ?? 1;
       return {
         ...c,
         ...demo,
-        total_spent: totalSpent,
-        visit_count: visitCount,
-        avg_order_value: demo.avg_order_value ?? Math.round(totalSpent / Math.max(visitCount, 1)),
+        total_spent: demo.total_spent ?? 0,
+        visit_count: demo.visit_count ?? 1,
+        avg_order_value: demo.avg_order_value ?? 0,
         last_visit: new Date(Date.now() - (demo.days_since_last_visit ?? 10) * 86400000).toISOString(),
       } as Customer;
     }
-    // Cycle through demo data for unmatched customers
-    const demoKey = demoKeys[demoIdx % demoKeys.length];
-    demoIdx++;
-    const demo = DEMO_ENRICHMENT[demoKey];
-    // Add some randomness so they don't all look the same
-    const spentVariation = 0.7 + Math.random() * 0.6;
-    const visitVariation = Math.max(1, Math.round((demo.visit_count ?? 5) * (0.6 + Math.random() * 0.8)));
-    const totalSpent = Math.round((demo.total_spent ?? 10000) * spentVariation / 100) * 100;
-    const daysSince = Math.max(1, Math.round((demo.days_since_last_visit ?? 10) * (0.5 + Math.random())));
-    return {
-      ...c,
-      segment: demo.segment ?? "promising",
-      total_spent: totalSpent,
-      visit_count: visitVariation,
-      avg_order_value: Math.round(totalSpent / Math.max(visitVariation, 1)),
-      days_since_last_visit: daysSince,
-      churn_probability: Math.min(0.99, Math.max(0.02, (demo.churn_probability ?? 0.3) + (Math.random() - 0.5) * 0.15)),
-      last_visit: new Date(Date.now() - daysSince * 86400000).toISOString(),
-      favorite_items: demo.favorite_items ?? [],
-    } as Customer;
+    // Keep real data as-is for unmatched customers
+    return c;
   });
 }
 
-type FilterType = "all" | "at_risk" | "churned";
+type FilterType = "all" | "champion" | "loyal" | "promising" | "at_risk" | "churned";
 
 export default function CustomersPage() {
   const [filter, setFilter] = useState<FilterType>("all");
@@ -258,6 +230,7 @@ export default function CustomersPage() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [winbackStats, setWinbackStats] = useState({ campaigns_sent: 0, customers_returned: 0, revenue_recovered: 0, success_rate: 0 });
 
   const fetchCustomers = async () => {
     setLoading(true);
@@ -307,6 +280,11 @@ export default function CustomersPage() {
       }
 
       setCustomers(list);
+
+      try {
+        const statsRes = await fetch(`${API_BASE_URL}/api/customers/${DEMO_MERCHANT_ID}/winback-stats`);
+        if (statsRes.ok) setWinbackStats(await statsRes.json());
+      } catch {}
     } catch (err) {
       console.error("Customers fetch failed, using fallback:", err);
       setFetchError((err as Error).message);
@@ -320,8 +298,7 @@ export default function CustomersPage() {
 
   const filtered = useMemo(() => {
     let list = customers;
-    if (filter === "at_risk") list = list.filter((c) => c.segment === "at_risk");
-    else if (filter === "churned") list = list.filter((c) => c.segment === "churned");
+    if (filter !== "all") list = list.filter((c) => c.segment === filter);
     if (search.trim()) {
       const q = search.toLowerCase();
       list = list.filter((c) => c.name.toLowerCase().includes(q));
@@ -592,17 +569,17 @@ export default function CustomersPage() {
 
         <div className="grid grid-cols-3 gap-3 mb-4">
           <div className="bg-blue-50 rounded-xl p-3 text-center">
-            <p className="text-lg font-bold text-blue-900">3</p>
+            <p className="text-lg font-bold text-blue-900">{winbackStats.campaigns_sent}</p>
             <p className="text-[10px] text-blue-600">Campaigns sent</p>
             <p className="text-[9px] text-blue-400">this month</p>
           </div>
           <div className="bg-emerald-50 rounded-xl p-3 text-center">
-            <p className="text-lg font-bold text-emerald-900">2</p>
+            <p className="text-lg font-bold text-emerald-900">{winbackStats.customers_returned}</p>
             <p className="text-[10px] text-emerald-600">Customers returned</p>
-            <p className="text-[9px] text-emerald-400">67% success</p>
+            <p className="text-[9px] text-emerald-400">{winbackStats.success_rate}% success</p>
           </div>
           <div className="bg-amber-50 rounded-xl p-3 text-center">
-            <p className="text-lg font-bold text-amber-900">Rs 28K</p>
+            <p className="text-lg font-bold text-amber-900">{formatINR(winbackStats.revenue_recovered)}</p>
             <p className="text-[10px] text-amber-600">Revenue recovered</p>
             <p className="text-[9px] text-amber-400">this month</p>
           </div>
@@ -612,28 +589,31 @@ export default function CustomersPage() {
         <div className="bg-gray-50 rounded-xl p-3">
           <div className="flex items-center justify-between text-xs mb-2">
             <span className="text-gray-600 font-medium">Campaign Success Rate</span>
-            <span className="font-bold text-emerald-600">67%</span>
+            <span className="font-bold text-emerald-600">{winbackStats.success_rate}%</span>
           </div>
           <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
             <motion.div
               initial={{ width: 0 }}
-              animate={{ width: "67%" }}
+              animate={{ width: `${winbackStats.success_rate}%` }}
               transition={{ duration: 0.8, delay: 0.3 }}
               className="h-full bg-emerald-500 rounded-full"
             />
           </div>
           <div className="flex items-center justify-between mt-2 text-[10px] text-gray-400">
-            <span>Sent to {winbackSent.size + 3} at-risk customers</span>
-            <span>{formatINR(28000)} recovered</span>
+            <span>Sent to {winbackSent.size + winbackStats.campaigns_sent} at-risk customers</span>
+            <span>{formatINR(winbackStats.revenue_recovered)} recovered</span>
           </div>
         </div>
       </motion.div>
 
       {/* Filters */}
-      <div className="flex gap-1 bg-gray-100 rounded-xl p-1">
+      <div className="flex gap-1 bg-gray-100 rounded-xl p-1 overflow-x-auto">
         {(
           [
             { id: "all" as FilterType, label: "All", count: customers.length },
+            { id: "champion" as FilterType, label: "Champion", count: segmentCounts.champion },
+            { id: "loyal" as FilterType, label: "Loyal", count: segmentCounts.loyal },
+            { id: "promising" as FilterType, label: "Promising", count: segmentCounts.promising },
             { id: "at_risk" as FilterType, label: "At Risk", count: segmentCounts.at_risk },
             { id: "churned" as FilterType, label: "Churned", count: segmentCounts.churned },
           ] as const

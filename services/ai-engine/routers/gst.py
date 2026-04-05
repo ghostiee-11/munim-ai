@@ -34,6 +34,103 @@ GST_SLABS = {
     "tobacco": 28,
 }
 
+# ---------------------------------------------------------------------------
+# Classification cache -- avoids repeated LLM calls for the same category
+# ---------------------------------------------------------------------------
+_classification_cache: dict[str, dict] = {}
+
+
+async def _classify_cached(txn: dict) -> dict:
+    """Classify with in-memory cache by category to avoid repeated LLM calls."""
+    cache_key = f"{txn.get('category', '')}|{txn.get('description', '')}"
+    if cache_key in _classification_cache:
+        return _classification_cache[cache_key]
+    from services.agents.gst_agent import auto_classify_transaction
+    result = await auto_classify_transaction(txn)
+    _classification_cache[cache_key] = result
+    return result
+
+
+# ---------------------------------------------------------------------------
+# GST Chatbot endpoint (placed before /{merchant_id} to avoid path conflict)
+# ---------------------------------------------------------------------------
+@router.post("/chat")
+async def gst_chat(body: dict):
+    """
+    GST doubt-clearing chatbot. Answers any GST question in Hindi/English
+    with context of the merchant's business data.
+    """
+    import json
+    import httpx
+
+    settings = get_settings()
+    merchant_id = body.get("merchant_id", "")
+    question = body.get("question", "").strip()
+
+    if not question:
+        raise HTTPException(status_code=400, detail="Question is required")
+
+    # Fetch merchant's GST context
+    context = ""
+    try:
+        txns = db.select("transactions", filters={"merchant_id": merchant_id}, limit=50)
+        if txns:
+            total_income = sum(t.get("amount", 0) for t in txns if t.get("type") == "income")
+            total_expense = sum(t.get("amount", 0) for t in txns if t.get("type") == "expense")
+            categories = list(set(t.get("category", "") for t in txns if t.get("category")))
+            context = (
+                f"Merchant data: Monthly income ~Rs {total_income:,.0f}, expenses ~Rs {total_expense:,.0f}. "
+                f"Business categories: {', '.join(categories[:10])}. "
+                f"Business type: Indian small business (likely textile/retail)."
+            )
+    except Exception:
+        context = "Business type: Indian small business."
+
+    system_prompt = f"""You are MunimAI's GST expert chatbot for Indian small businesses.
+
+RULES:
+1. Answer GST questions in simple Hindi (with English terms for GST jargon)
+2. Be specific with rates, HSN codes, due dates, penalties
+3. Reference the merchant's actual business data when relevant
+4. Keep answers concise (under 200 words)
+5. If unsure, say so and suggest consulting a CA
+6. Include practical examples relevant to their business
+7. Mention deadlines: GSTR-3B due 20th of next month, GSTR-1 due 11th
+
+{context}
+
+Answer the merchant's GST question:"""
+
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {settings.groq_api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": settings.groq_model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": question},
+        ],
+        "temperature": 0.3,
+        "max_tokens": 500,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+
+        if resp.status_code == 200:
+            answer = resp.json()["choices"][0]["message"]["content"].strip()
+            return {"answer": answer, "question": question}
+    except Exception as e:
+        logger.error("GST chat failed: %s", e)
+
+    return {
+        "answer": "Maaf kijiye, abhi answer nahi mil paya. Kripya apne CA se puchein ya dobara try karein.",
+        "question": question,
+    }
+
 
 @router.get("/{merchant_id}", response_model=GSTSummary)
 async def get_gst_summary(
@@ -63,12 +160,10 @@ async def get_gst_summary(
         lte=("recorded_at", end),
     )
 
-    from services.agents.gst_agent import auto_classify_transaction
-
     sales = sum(t["amount"] for t in txns if t.get("type") == "income")
     purchases = sum(t["amount"] for t in txns if t.get("type") == "expense")
 
-    # Use real HSN rates per transaction via auto_classify_transaction
+    # Use real HSN rates per transaction via cached auto_classify_transaction
     gst_collected = 0.0
     gst_paid = 0.0
     slab_sales: dict[str, float] = {}
@@ -76,7 +171,7 @@ async def get_gst_summary(
 
     for t in txns:
         try:
-            cls = await auto_classify_transaction(t)
+            cls = await _classify_cached(t)
             rate = cls.get("gst_rate", 18) / 100.0
         except Exception:
             rate = 0.18
@@ -128,8 +223,6 @@ async def get_gst_report(
     year: int = Query(None, ge=2020, le=2099, description="Year"),
 ):
     """Get full GST report with CGST/SGST breakdown for a given month."""
-    from services.agents.gst_agent import auto_classify_transaction
-
     today = date.today()
     rpt_month = month or today.month
     rpt_year = year or today.year
@@ -156,7 +249,7 @@ async def get_gst_report(
     total_sgst = 0.0
 
     for txn in txns:
-        cls = await auto_classify_transaction(txn)
+        cls = await _classify_cached(txn)
         item = {
             "id": txn.get("id"),
             "description": txn.get("description", ""),
