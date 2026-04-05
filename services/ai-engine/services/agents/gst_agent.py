@@ -639,15 +639,83 @@ async def auto_classify_transaction(transaction: dict) -> dict:
                 match = hsn_entry
                 break
 
+    # If no match in hardcoded map, use Tavily to search for GST rate
+    if match is None:
+        try:
+            from services.tavily_search import search_schemes
+            query = f"GST rate HSN code for {category} {description} India 2026"
+            results = await search_schemes(query, max_results=2)
+            if results:
+                # Use Groq to extract rate from search results
+                snippet = results[0].get("snippet", "")
+                from config import get_settings
+                import httpx
+                settings = get_settings()
+                if settings.groq_api_key and snippet:
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        resp = await client.post(
+                            "https://api.groq.com/openai/v1/chat/completions",
+                            headers={"Authorization": f"Bearer {settings.groq_api_key}"},
+                            json={
+                                "model": "llama-3.3-70b-versatile",
+                                "messages": [{"role": "user", "content": f"From this text, extract the GST rate percentage for '{category} {description}'. Return ONLY the number (e.g., 5, 12, 18, 28). If unsure return 18.\n\nText: {snippet[:500]}"}],
+                                "temperature": 0, "max_tokens": 10,
+                            },
+                        )
+                    if resp.status_code == 200:
+                        rate_str = resp.json()["choices"][0]["message"]["content"].strip()
+                        try:
+                            rate = int(float(rate_str))
+                            if rate in (0, 3, 5, 12, 18, 28):
+                                match = {"hsn": "9999", "rate": rate}
+                                logger.info(f"Tavily GST lookup: '{category}' → {rate}%")
+                        except ValueError:
+                            pass
+        except Exception as e:
+            logger.warning(f"Tavily GST lookup failed for '{category}': {e}")
+
     if match is None:
         match = HSN_MAP["general"]
 
+    rate = match["rate"]
+
+    # MRP items: GST is INCLUSIVE in price (cosmetics, packaged food, electronics, medicines, FMCG)
+    # Non-MRP items: GST is EXCLUSIVE (textiles, custom goods, services)
+    MRP_INCLUSIVE_CATEGORIES = {
+        "cosmetics", "cream", "shampoo", "soap", "toothpaste", "fmcg",
+        "packaged", "biscuit", "chips", "cold_drink", "soft_drink", "juice",
+        "medicine", "pharmacy", "tablet", "syrup",
+        "electronics", "mobile", "phone", "charger", "earphone", "cable",
+        "battery", "bulb", "tube", "led",
+        "detergent", "cleaner", "oil",
+    }
+
+    combined_lower = f"{category} {description}".lower()
+    is_inclusive = any(mrp_cat in combined_lower for mrp_cat in MRP_INCLUSIVE_CATEGORIES)
+
+    # Also: expenses/purchases from vendors are typically inclusive (MRP paid)
+    txn_type = transaction.get("type", "")
+    if txn_type == "expense" and category.lower() not in ("rent", "salary", "wages", "transport", "courier", "maintenance", "repair"):
+        is_inclusive = True
+
+    if is_inclusive:
+        # GST is already included in the amount
+        # Extract GST: gst = amount - (amount * 100 / (100 + rate))
+        base_amount = round(amount * 100 / (100 + rate), 2)
+        gst_amount = round(amount - base_amount, 2)
+    else:
+        # GST is on top of amount
+        base_amount = amount
+        gst_amount = round(amount * rate / 100, 2)
+
     return {
         "hsn_code": match["hsn"],
-        "gst_rate": match["rate"],
-        "gst_amount": round(amount * match["rate"] / 100, 2),
-        "cgst": round(amount * match["rate"] / 200, 2),
-        "sgst": round(amount * match["rate"] / 200, 2),
+        "gst_rate": rate,
+        "is_inclusive": is_inclusive,
+        "base_amount": base_amount,
+        "gst_amount": gst_amount,
+        "cgst": round(gst_amount / 2, 2),
+        "sgst": round(gst_amount / 2, 2),
     }
 
 
