@@ -160,6 +160,19 @@ async def _add_expense(merchant_id: str, entities: dict[str, Any]) -> ActionResu
     description = entities.get("description", "")
     payment_mode = entities.get("payment_mode", "cash")
 
+    # Check if party is a known vendor — auto-redirect to vendor payment
+    if party:
+        try:
+            from models.db import get_client as _get_client
+            supa = _get_client()
+            vendors = supa.table("vendors").select("id,name").eq("merchant_id", merchant_id).execute()
+            for v in (vendors.data or []):
+                if party.lower() in v.get("name", "").lower() or v.get("name", "").lower() in party.lower():
+                    # It's a vendor! Route to vendor payment handler
+                    return await _add_vendor_payment(merchant_id, entities)
+        except Exception:
+            pass
+
     txn = db.insert("transactions", {
         "merchant_id": merchant_id,
         "amount": float(amount),
@@ -495,6 +508,169 @@ async def _setup_recurring(merchant_id: str, entities: dict[str, Any]) -> Action
         ),
         data={"recurring_payment": record},
     )
+
+
+# ---------------------------------------------------------------------------
+# Fallback / Greeting
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Handlers -- Vendor operations
+# ---------------------------------------------------------------------------
+
+@_register("add_vendor_payment")
+async def _add_vendor_payment(merchant_id: str, entities: dict[str, Any]) -> ActionResult:
+    amount = entities.get("amount")
+    vendor_name = entities.get("party_name") or entities.get("customer_name")
+    if not amount:
+        return ActionResult(False, "Vendor ko kitna payment karna hai? Amount bataiye.")
+    if not vendor_name:
+        return ActionResult(False, "Kis vendor ko payment karna hai? Naam bataiye.")
+
+    payment_mode = entities.get("payment_mode", "upi")
+
+    # Look up vendor in Supabase
+    from models.db import get_client
+    supa = get_client()
+    vendor_results = (
+        supa.table("vendors")
+        .select("*")
+        .eq("merchant_id", merchant_id)
+        .ilike("name", f"%{vendor_name}%")
+        .limit(1)
+        .execute()
+    ).data or []
+    matched_vendor = vendor_results[0] if vendor_results else None
+
+    # Find pending payable for this vendor and record payment
+    if matched_vendor:
+        payable_results = (
+            supa.table("payables")
+            .select("*")
+            .eq("vendor_id", matched_vendor["id"])
+            .in_("status", ["pending", "partial", "overdue"])
+            .limit(1)
+            .execute()
+        ).data or []
+        if payable_results:
+            p = payable_results[0]
+            pay_amount = min(float(amount), p.get("remaining", 0) or 0)
+            if pay_amount > 0:
+                new_amount_paid = (p.get("amount_paid", 0) or 0) + pay_amount
+                new_status = "paid" if (p["amount"] - new_amount_paid) <= 0 else "partial"
+                supa.table("payables").update({
+                    "amount_paid": new_amount_paid,
+                    "status": new_status,
+                }).eq("id", p["id"]).execute()
+
+    # Record as expense
+    txn = db.insert("transactions", {
+        "merchant_id": merchant_id,
+        "amount": float(amount),
+        "type": "expense",
+        "category": "vendor_payment",
+        "supplier_name": vendor_name,
+        "payment_mode": payment_mode,
+        "description": f"Payment to vendor {vendor_name}",
+        "recorded_at": datetime.now().isoformat(),
+        "source": "voice",
+    })
+
+    await realtime.emit_transaction_created(merchant_id, txn)
+    await realtime.emit_dashboard_refresh(merchant_id)
+
+    return ActionResult(
+        success=True,
+        response_text=f"Done! {vendor_name} ko {amount} rupaye ka payment record ho gaya ({payment_mode}).",
+        data={"transaction": txn},
+    )
+
+
+@_register("add_vendor_order")
+async def _add_vendor_order(merchant_id: str, entities: dict[str, Any]) -> ActionResult:
+    amount = entities.get("amount")
+    vendor_name = entities.get("party_name") or entities.get("customer_name")
+    if not vendor_name:
+        return ActionResult(False, "Kis vendor se order karna hai? Naam bataiye.")
+
+    description = entities.get("description", "")
+
+    # Create a payable for this order via Supabase
+    from models.db import get_client
+    supa = get_client()
+    vendor_results = (
+        supa.table("vendors")
+        .select("id")
+        .eq("merchant_id", merchant_id)
+        .ilike("name", f"%{vendor_name}%")
+        .limit(1)
+        .execute()
+    ).data or []
+    vendor_id = vendor_results[0]["id"] if vendor_results else None
+
+    payable_data = {
+        "merchant_id": merchant_id,
+        "vendor_name": vendor_name,
+        "vendor_id": vendor_id,
+        "amount": float(amount) if amount else 0,
+        "amount_paid": 0,
+        "status": "pending",
+        "due_date": (date.today() + timedelta(days=30)).isoformat(),
+        "description": description or f"Order from {vendor_name}",
+    }
+    # Do NOT insert 'remaining' - it is a GENERATED column
+    saved = supa.table("payables").insert(payable_data).execute()
+    payable = saved.data[0] if saved.data else payable_data
+
+    await realtime.emit_dashboard_refresh(merchant_id)
+
+    amount_str = f" {amount} rupaye ka" if amount else ""
+    return ActionResult(
+        success=True,
+        response_text=f"{vendor_name} se{amount_str} order place ho gaya. Payable create kar diya.",
+        data={"payable": payable},
+    )
+
+
+@_register("check_vendor_balance")
+async def _check_vendor_balance(merchant_id: str, entities: dict[str, Any]) -> ActionResult:
+    vendor_name = entities.get("party_name") or entities.get("customer_name")
+
+    from models.db import get_client
+    supa = get_client()
+
+    if vendor_name:
+        # Find specific vendor's payables
+        matched_payables = (
+            supa.table("payables")
+            .select("remaining")
+            .eq("merchant_id", merchant_id)
+            .ilike("vendor_name", f"%{vendor_name}%")
+            .neq("status", "paid")
+            .execute()
+        ).data or []
+        total = sum(p.get("remaining", 0) or 0 for p in matched_payables)
+        return ActionResult(
+            success=True,
+            response_text=f"{vendor_name} ko total {total} rupaye dena baaki hai.",
+            data={"vendor_name": vendor_name, "outstanding": total, "payables_count": len(matched_payables)},
+        )
+    else:
+        # All vendors
+        all_payables = (
+            supa.table("payables")
+            .select("remaining,status")
+            .eq("merchant_id", merchant_id)
+            .neq("status", "paid")
+            .execute()
+        ).data or []
+        total = sum(p.get("remaining", 0) or 0 for p in all_payables)
+        overdue = sum(p.get("remaining", 0) or 0 for p in all_payables if p.get("status") == "overdue")
+        return ActionResult(
+            success=True,
+            response_text=f"Total vendor outstanding {total} rupaye hai, jisme se {overdue} rupaye overdue hai.",
+            data={"total_outstanding": total, "total_overdue": overdue, "payables_count": len(all_payables)},
+        )
 
 
 # ---------------------------------------------------------------------------

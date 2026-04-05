@@ -53,7 +53,7 @@ async def transcribe_audio(audio_bytes: bytes, language: str = "hi") -> str:
 
 NLU_SYSTEM_PROMPT = """You are the NLU engine for MunimAI, an AI accounting assistant for Indian small businesses.
 Given user speech (Hindi/Hinglish/English), extract:
-1. intent: one of [add_income, add_expense, add_udhari, settle_udhari, get_today_summary, get_udhari_summary, get_balance, send_reminder, setup_recurring, greeting, help, unknown]
+1. intent: one of [add_income, add_expense, add_udhari, settle_udhari, get_today_summary, get_udhari_summary, get_balance, send_reminder, setup_recurring, add_vendor_payment, add_vendor_order, check_vendor_balance, greeting, help, unknown]
 2. entities: {amount, category, party_name, customer_name, beneficiary_name, description, phone, due_date, payment_mode, frequency, upi_id} -- only include what is present
 3. confidence: 0.0 to 1.0
 
@@ -75,6 +75,12 @@ Important:
   - "supplier ko 25000 monthly dena hai" -> setup_recurring, amount=25000, category="supplier", frequency="monthly"
   - frequency: "har hafte"/"weekly" = "weekly", "har do hafte" = "biweekly", "har mahine"/"monthly" = "monthly", "har teen mahine"/"quarterly" = "quarterly". Default to "monthly".
   - category: detect from context -- rent/kiraya = "rent", salary/tankhah/vetan = "salary", supplier/saamaan = "supplier", bijli/paani/gas/bill = "utility", EMI/loan = "emi"
+- "vendor ko payment" / "supplier ko paisa bhejo" / "vendor payment karo" = add_vendor_payment
+  - Examples: "Rajan Textiles ko 10000 bhejo" -> add_vendor_payment, amount=10000, party_name="Rajan Textiles"
+- "vendor se order" / "supplier ko order do" / "saamaan mangao" = add_vendor_order
+  - Examples: "Mumbai Dyes se 50000 ka order karo" -> add_vendor_order, amount=50000, party_name="Mumbai Dyes"
+- "vendor ka balance" / "supplier ko kitna dena hai" / "vendor outstanding" = check_vendor_balance
+  - Examples: "Rajan Textiles ko kitna dena hai" -> check_vendor_balance, party_name="Rajan Textiles"
 - For amounts: "paanch hazaar" = 5000, "do sau" = 200, etc.
 - payment_mode: "cash" if naqad/haath se/cash/rokda, "upi" if UPI/online/phone pe/Google Pay/Paytm/GPay/digital. Default to "cash" if not specified.
 """

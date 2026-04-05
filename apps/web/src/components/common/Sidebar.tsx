@@ -23,6 +23,7 @@ import {
   ChevronRight,
   Award,
   RefreshCw,
+  Truck,
 } from "lucide-react";
 
 interface NavItem {
@@ -42,6 +43,7 @@ const navItems: NavItem[] = [
   { label: "Govt Schemes", labelHindi: "सरकारी योजना", icon: Landmark, href: "/schemes" },
   { label: "Employees", labelHindi: "कर्मचारी", icon: UserCircle, href: "/employees" },
   { label: "AutoPay", labelHindi: "ऑटोपे", icon: RefreshCw, href: "/autopay" },
+  { label: "Vendor Ledger", labelHindi: "विक्रेता खाता", icon: Truck, href: "/vendors" },
   { label: "WhatsApp", labelHindi: "वॉट्सऐप", icon: MessageCircle, href: "/whatsapp" },
   { label: "Soundbox", labelHindi: "साउंडबॉक्स", icon: Volume2, href: "/soundbox" },
   { label: "Chat with Muneem", labelHindi: "मुनीम से बात", icon: MessageSquare, href: "/chat" },

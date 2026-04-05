@@ -113,9 +113,14 @@ class ApproveRequest(BaseModel):
 # In-memory stores (production would use Supabase)
 # ---------------------------------------------------------------------------
 
-_recurring_store: dict[str, dict] = {}
+_MID = "11111111-1111-1111-1111-111111111111"
+_recurring_store: dict[str, dict] = {
+    "rec_1": {"id": "rec_1", "merchant_id": _MID, "name": "Monthly Rent", "amount": 15000, "frequency": "monthly", "category": "rent", "payment_method": "upi", "upi_id": "landlord@paytm", "account_no": None, "ifsc_code": None, "beneficiary_name": "Ramesh Verma", "next_due": "2026-04-10", "reminder_days_before": 1, "auto_approve": False, "is_active": True, "notes": "Shop rent", "created_at": "2026-01-15T10:00:00"},
+    "rec_2": {"id": "rec_2", "merchant_id": _MID, "name": "Salary - Raju", "amount": 8000, "frequency": "weekly", "category": "salary", "payment_method": "bank_transfer", "upi_id": None, "account_no": "1234567890", "ifsc_code": "SBIN0001234", "beneficiary_name": "Raju Yadav", "next_due": "2026-04-07", "reminder_days_before": 1, "auto_approve": False, "is_active": True, "notes": "Weekly salary", "created_at": "2026-02-01T10:00:00"},
+    "rec_3": {"id": "rec_3", "merchant_id": _MID, "name": "Supplier - Gupta Traders", "amount": 25000, "frequency": "monthly", "category": "supplier", "payment_method": "upi", "upi_id": "gupta.traders@ybl", "account_no": None, "ifsc_code": None, "beneficiary_name": "Gupta Traders", "next_due": "2026-04-15", "reminder_days_before": 2, "auto_approve": False, "is_active": True, "notes": "Monthly stock", "created_at": "2026-01-20T10:00:00"},
+    "rec_4": {"id": "rec_4", "merchant_id": _MID, "name": "Electricity Bill", "amount": 3500, "frequency": "monthly", "category": "utility", "payment_method": "upi", "upi_id": "bescom@ybl", "account_no": None, "ifsc_code": None, "beneficiary_name": "BESCOM", "next_due": "2026-04-20", "reminder_days_before": 1, "auto_approve": True, "is_active": True, "notes": "Auto-approved", "created_at": "2026-03-01T10:00:00"},
+}
 _execution_store: dict[str, dict] = {}
-# Map from merchant_id to their most recent pending execution
 _pending_approvals: dict[str, str] = {}
 
 
@@ -173,7 +178,6 @@ async def check_due_payments(merchant_id: str):
 async def create_recurring(body: RecurringCreate):
     """Create a new recurring payment schedule."""
     record = {
-        "id": str(uuid4()),
         "merchant_id": body.merchant_id,
         "name": body.name,
         "amount": body.amount,
@@ -222,9 +226,9 @@ async def list_recurring(
         # Fallback to in-memory
         results = [
             r for r in _recurring_store.values()
-            if r["merchant_id"] == merchant_id and (not active_only or r.get("is_active", True))
+            if r.get("merchant_id") == merchant_id and (not active_only or r.get("is_active", True))
         ]
-        return sorted(results, key=lambda x: x["created_at"], reverse=True)
+        return sorted(results, key=lambda x: x.get("created_at", ""), reverse=True)
 
 
 @router.get("/{merchant_id}/upcoming")

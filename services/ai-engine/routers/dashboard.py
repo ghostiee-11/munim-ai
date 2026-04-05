@@ -22,6 +22,15 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _get_vendor_payables(merchant_id: str) -> dict:
+    """Get vendor payables summary for dashboard."""
+    try:
+        from routers.vendors import get_vendor_payables_summary
+        return get_vendor_payables_summary(merchant_id)
+    except Exception:
+        return {"total_payables": 0, "overdue_payables": 0}
+
+
 def _aggregate_txns(txns: list[dict]) -> tuple[float, float]:
     """Return (income, expense) totals from a list of transaction dicts."""
     income = sum(t["amount"] for t in txns if t.get("type") == "income")
@@ -143,6 +152,8 @@ async def get_dashboard(merchant_id: str):
             "active_customers": len(customers),
             "recent_transactions": recent_transactions,
             "alerts": alerts,
+            # Vendor payables
+            **_get_vendor_payables(merchant_id),
         }
     except Exception as e:
         logger.exception(f"Error in dashboard: {e}")
