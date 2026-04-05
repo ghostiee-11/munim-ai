@@ -26,7 +26,9 @@ import {
   Truck,
   Receipt,
   Package,
+  LogOut,
 } from "lucide-react";
+import { clearMunimAuth } from "@/components/common/AuthGuard";
 
 interface NavItem {
   label: string;
@@ -162,6 +164,13 @@ export function Sidebar({ payScore = 74 }: SidebarProps) {
                 <p className="text-[10px] text-gray-400">Jaipur, Rajasthan</p>
               </div>
             </div>
+            <button
+              onClick={() => { clearMunimAuth(); router.push("/login"); }}
+              className="mt-2 w-full flex items-center gap-2 px-3 py-2 text-xs text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              Logout
+            </button>
           </div>
         ) : (
           <div className="flex flex-col items-center gap-2">
@@ -169,6 +178,13 @@ export function Sidebar({ payScore = 74 }: SidebarProps) {
             <div className="h-7 w-7 rounded-full bg-gradient-to-br from-[#002E6E] to-[#00BAF2] flex items-center justify-center text-white text-[10px] font-bold">
               SS
             </div>
+            <button
+              onClick={() => { clearMunimAuth(); router.push("/login"); }}
+              className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+              title="Logout"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+            </button>
           </div>
         )}
       </div>

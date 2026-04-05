@@ -14,7 +14,9 @@ import {
   Loader2,
   CheckCircle2,
   Sparkles,
+  Home,
 } from "lucide-react";
+import Link from "next/link";
 import { DEMO_MERCHANT_ID } from "@/lib/constants";
 
 const FEATURES = [
@@ -262,6 +264,15 @@ export default function LoginPage() {
 
       {/* Right Panel — Login Form */}
       <div className="flex-1 flex items-center justify-center p-6 sm:p-8 lg:w-[40%] bg-white relative">
+        {/* Home button */}
+        <Link
+          href="/"
+          className="absolute top-6 right-6 flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-500 bg-gray-100 rounded-lg hover:bg-gray-200 hover:text-gray-700 transition-colors z-10"
+        >
+          <Home className="w-3.5 h-3.5" />
+          Home
+        </Link>
+
         {/* Mobile branding */}
         <div className="absolute top-6 left-6 lg:hidden flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-[#002E6E] to-[#00BAF2] shadow-lg shadow-[#00BAF2]/20">
