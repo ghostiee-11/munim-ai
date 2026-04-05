@@ -310,6 +310,29 @@ async def get_forecast(
         data_days = len(set(str(t.get("recorded_at", ""))[:10] for t in txns))
         confidence = min(0.95, max(0.3, data_days / 90))
 
+        # Auto-send cash crunch warning via WhatsApp
+        if cash_crunch_days:
+            # Only send once per 24 hours
+            try:
+                import asyncio
+                from services.twilio_service import send_whatsapp
+                from models.db import get_client as _gc2
+                _db2 = _gc2()
+                # Check if we already sent today
+                today_str = date.today().isoformat()
+                existing = _db2.table("briefings").select("id").eq("merchant_id", merchant_id).gte("created_at", today_str).execute()
+                already_sent = any("cash_crunch" in str(b) for b in (existing.data or []))
+                if not already_sent:
+                    msg = f"\u26a0\ufe0f Cash Crunch Alert: {len(cash_crunch_days)} din mein cash short hoga. Collection badhaein."
+                    asyncio.create_task(send_whatsapp("+917725014797", msg))
+                    # Mark as sent
+                    try:
+                        _db2.table("briefings").insert({"merchant_id": merchant_id, "date": today_str, "content": {"type": "cash_crunch", "sent": True}}).execute()
+                    except Exception:
+                        pass  # briefing for today may already exist
+            except Exception:
+                pass
+
         return ForecastResponse(
             merchant_id=merchant_id,
             period=period,

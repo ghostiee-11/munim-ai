@@ -62,6 +62,16 @@ async def call_debtor(udhari_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.delete("/{udhari_id}")
+async def delete_udhari(udhari_id: str):
+    """Delete an udhari entry."""
+    try:
+        deleted = db.delete("udhari", udhari_id)
+        return {"deleted": deleted, "id": udhari_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Delete failed: {e}")
+
+
 @router.get("/{merchant_id}")
 async def list_udharis(
     merchant_id: str,
@@ -286,7 +296,15 @@ async def get_ranked_udharis(merchant_id: str):
 
     for u in all_udharis:
         status = u.get("status", "pending")
+
+        # Include settled entries with risk_score 0
         if status == "settled":
+            scored.append({
+                **u,
+                "risk_score": 0,
+                "days_old": 0,
+                "remaining": 0,
+            })
             continue
 
         amount = u.get("amount", 0) or 0
@@ -337,6 +355,20 @@ async def get_ranked_udharis(merchant_id: str):
 
     # Sort by risk score descending
     scored.sort(key=lambda x: -x["risk_score"])
+
+    # Auto-send reminders for 7+ day overdue entries
+    for entry in scored:
+        if entry.get("status") == "overdue":
+            days_old = entry.get("days_old", 0)
+            last_remind = entry.get("last_reminder_at")
+            if days_old > 7 and (not last_remind or (date.today() - datetime.fromisoformat(last_remind.replace("Z", "+00:00")).date()).days > 3):
+                try:
+                    import asyncio
+                    from services.twilio_service import send_whatsapp
+                    msg = f"Namaste {entry['debtor_name']} ji, Rs {entry.get('remaining', 0):,.0f} ka payment {days_old} din se baaki hai."
+                    asyncio.create_task(send_whatsapp("+917725014797", f"\U0001f514 Udhari Reminder Sent\n{msg}"))
+                except Exception:
+                    pass
 
     return {
         "merchant_id": merchant_id,

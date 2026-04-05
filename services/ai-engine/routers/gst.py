@@ -63,18 +63,41 @@ async def get_gst_summary(
         lte=("recorded_at", end),
     )
 
+    from services.agents.gst_agent import auto_classify_transaction
+
     sales = sum(t["amount"] for t in txns if t.get("type") == "income")
     purchases = sum(t["amount"] for t in txns if t.get("type") == "expense")
 
-    # Estimate GST -- in production this uses per-item HSN classification
-    gst_rate = 0.18  # default 18% slab
-    gst_collected = round(sales * gst_rate / (1 + gst_rate), 2)  # extract GST from inclusive price
-    gst_paid = round(purchases * gst_rate / (1 + gst_rate), 2)   # ITC
+    # Use real HSN rates per transaction via auto_classify_transaction
+    gst_collected = 0.0
+    gst_paid = 0.0
+    slab_sales: dict[str, float] = {}
+    slab_gst: dict[str, float] = {}
+
+    for t in txns:
+        try:
+            cls = await auto_classify_transaction(t)
+            rate = cls.get("gst_rate", 18) / 100.0
+        except Exception:
+            rate = 0.18
+        amount = t.get("amount", 0)
+        gst_amount = round(amount * rate / (1 + rate), 2)
+        slab_key = f"{int(rate * 100)}%"
+        if t.get("type") == "income":
+            gst_collected += gst_amount
+            slab_sales[slab_key] = slab_sales.get(slab_key, 0) + amount
+            slab_gst[slab_key] = slab_gst.get(slab_key, 0) + gst_amount
+        elif t.get("type") == "expense":
+            gst_paid += gst_amount
+
+    gst_collected = round(gst_collected, 2)
+    gst_paid = round(gst_paid, 2)
     net_liability = round(gst_collected - gst_paid, 2)
 
-    # Slab breakdown (simplified)
+    # Slab breakdown from actual classification
     slab_breakdown = [
-        {"slab": "18%", "sales": round(sales, 2), "gst": round(gst_collected, 2)},
+        {"slab": slab, "sales": round(slab_sales.get(slab, 0), 2), "gst": round(slab_gst.get(slab, 0), 2)}
+        for slab in sorted(slab_sales.keys())
     ]
 
     return GSTSummary(

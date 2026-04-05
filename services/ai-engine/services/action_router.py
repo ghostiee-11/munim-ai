@@ -136,6 +136,20 @@ async def _add_income(merchant_id: str, entities: dict[str, Any]) -> ActionResul
     except Exception:
         logger.warning("Auto GST classification failed for income txn, continuing")
 
+    # Check for duplicate: same amount within 1 hour
+    try:
+        import asyncio
+        from services.twilio_service import send_whatsapp
+        one_hour_ago = (datetime.now() - timedelta(hours=1)).isoformat()
+        dupes = db.select_range("transactions",
+            filters={"merchant_id": merchant_id, "amount": float(amount)},
+            gte=("created_at", one_hour_ago))
+        if len(dupes) > 1:
+            asyncio.create_task(send_whatsapp("+917725014797",
+                f"\u26a0\ufe0f Warning: Rs {amount} {party or ''} do baar record hua 1 ghante mein. Check karein."))
+    except Exception:
+        pass
+
     await realtime.emit_transaction_created(merchant_id, txn)
     await realtime.emit_dashboard_refresh(merchant_id)
 
@@ -199,6 +213,20 @@ async def _add_expense(merchant_id: str, entities: dict[str, Any]) -> ActionResu
             txn["gst_rate"] = classification["gst_rate"]
     except Exception:
         logger.warning("Auto GST classification failed for expense txn, continuing")
+
+    # Check for duplicate: same amount within 1 hour
+    try:
+        import asyncio
+        from services.twilio_service import send_whatsapp
+        one_hour_ago = (datetime.now() - timedelta(hours=1)).isoformat()
+        dupes = db.select_range("transactions",
+            filters={"merchant_id": merchant_id, "amount": float(amount)},
+            gte=("created_at", one_hour_ago))
+        if len(dupes) > 1:
+            asyncio.create_task(send_whatsapp("+917725014797",
+                f"\u26a0\ufe0f Warning: Rs {amount} {party or ''} do baar record hua 1 ghante mein. Check karein."))
+    except Exception:
+        pass
 
     await realtime.emit_transaction_created(merchant_id, txn)
     await realtime.emit_dashboard_refresh(merchant_id)
@@ -518,15 +546,9 @@ async def _setup_recurring(merchant_id: str, entities: dict[str, Any]) -> Action
         "created_at": datetime.now().isoformat(),
     }
 
-    # Store in recurring payments
-    try:
-        saved = db.insert("recurring_payments", record)
-        logger.info("Recurring payment created via voice: %s", saved.get("id"))
-    except Exception:
-        # Fallback: store in the recurring router's in-memory store
-        from routers.recurring import _recurring_store
-        _recurring_store[record["id"]] = record
-        logger.info("Recurring payment created in memory via voice: %s", record["id"])
+    # Store in recurring payments (Supabase only)
+    saved = db.insert("recurring_payments", record)
+    logger.info("Recurring payment created via voice: %s", saved.get("id"))
 
     freq_hindi = {
         "weekly": "har hafte", "biweekly": "har do hafte",

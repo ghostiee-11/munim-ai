@@ -20,6 +20,9 @@ import {
   ChevronUp,
   Phone,
   RefreshCw,
+  Plus,
+  Trash2,
+  X,
 } from "lucide-react";
 
 // ---------- Types ----------
@@ -28,16 +31,22 @@ type UdhariStatus = "pending" | "overdue" | "settled" | "partial";
 interface UdhariEntry {
   id: string;
   debtor_name: string;
-  phone: string;
+  debtor_phone?: string;
+  phone?: string;
   amount: number;
   amount_paid: number;
+  remaining?: number;
   status: UdhariStatus;
-  days_overdue: number;
+  days_overdue?: number;
+  days_old?: number;
   reminder_count: number;
   risk_score: number; // 0-100
   created_at: string;
   last_reminder?: string;
+  last_reminder_at?: string;
   items?: string;
+  notes?: string;
+  due_date?: string;
 }
 
 // ---------- Demo Data (35 entries) ----------
@@ -53,8 +62,7 @@ const NAMES = [
 
 function generateUdhariData(): UdhariEntry[] {
   return NAMES.map((name, i) => {
-    const statuses: UdhariStatus[] = ["pending", "overdue", "settled", "partial"];
-    const status = i < 8 ? "overdue" : i < 18 ? "pending" : i < 25 ? "partial" : "settled";
+    const status: UdhariStatus = i < 8 ? "overdue" : i < 18 ? "pending" : i < 25 ? "partial" : "settled";
     const amount = Math.round((3000 + Math.random() * 22000) / 100) * 100;
     const amountPaid = status === "settled" ? amount : status === "partial" ? Math.round(amount * (0.2 + Math.random() * 0.5) / 100) * 100 : 0;
     const daysOverdue = status === "overdue" ? Math.floor(15 + Math.random() * 75) : status === "pending" ? Math.floor(Math.random() * 14) : 0;
@@ -63,7 +71,7 @@ function generateUdhariData(): UdhariEntry[] {
     return {
       id: `udh_${i + 1}`,
       debtor_name: name,
-      phone: `+91 98${Math.floor(10000000 + Math.random() * 89999999)}`,
+      debtor_phone: `+91 98${Math.floor(10000000 + Math.random() * 89999999)}`,
       amount,
       amount_paid: amountPaid,
       status,
@@ -82,16 +90,22 @@ const UDHARI_FALLBACK = generateUdhariData();
 type TabType = "all" | "pending" | "overdue" | "settled";
 
 const TAB_OPTIONS: { id: TabType; label: string; hindiLabel: string }[] = [
-  { id: "all", label: "All", hindiLabel: "सभी" },
-  { id: "pending", label: "Pending", hindiLabel: "बाकी" },
-  { id: "overdue", label: "Overdue", hindiLabel: "लेट" },
-  { id: "settled", label: "Settled", hindiLabel: "चुकता" },
+  { id: "all", label: "All", hindiLabel: "\u0938\u092D\u0940" },
+  { id: "pending", label: "Pending", hindiLabel: "\u092C\u093E\u0915\u0940" },
+  { id: "overdue", label: "Overdue", hindiLabel: "\u0932\u0947\u091F" },
+  { id: "settled", label: "Settled", hindiLabel: "\u091A\u0941\u0915\u0924\u093E" },
 ];
 
 function getRiskColor(score: number) {
   if (score >= 70) return "text-red-600 bg-red-50";
   if (score >= 40) return "text-amber-600 bg-amber-50";
   return "text-emerald-600 bg-emerald-50";
+}
+
+function getRiskBadge(score: number) {
+  if (score >= 70) return { label: "\uD83D\uDD25 High Risk", className: "bg-red-50 text-red-700" };
+  if (score >= 40) return { label: "\uD83D\uDFE1 Medium", className: "bg-amber-50 text-amber-700" };
+  return { label: "\uD83D\uDFE2 Low", className: "bg-emerald-50 text-emerald-700" };
 }
 
 function getStatusBadge(status: UdhariStatus) {
@@ -104,6 +118,28 @@ function getStatusBadge(status: UdhariStatus) {
   return map[status];
 }
 
+// Helper to normalize backend entry to our interface
+function normalizeEntry(d: Record<string, unknown>): UdhariEntry {
+  return {
+    id: d.id as string,
+    debtor_name: (d.debtor_name || d.customer_name || "") as string,
+    debtor_phone: (d.debtor_phone || d.customer_phone || d.phone || "") as string,
+    amount: (d.amount as number) || 0,
+    amount_paid: (d.amount_paid as number) || 0,
+    remaining: d.remaining as number | undefined,
+    status: (d.status as UdhariStatus) || "pending",
+    days_overdue: (d.days_overdue ?? d.days_old ?? 0) as number,
+    days_old: (d.days_old ?? d.days_overdue ?? 0) as number,
+    reminder_count: (d.reminder_count as number) || 0,
+    risk_score: (d.risk_score as number) || 0,
+    created_at: (d.created_at as string) || "",
+    last_reminder: (d.last_reminder_at || d.last_reminder) as string | undefined,
+    items: d.items as string | undefined,
+    notes: (d.notes || d.description) as string | undefined,
+    due_date: d.due_date as string | undefined,
+  };
+}
+
 export default function UdhariPage() {
   const [tab, setTab] = useState<TabType>("all");
   const [search, setSearch] = useState("");
@@ -113,6 +149,26 @@ export default function UdhariPage() {
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [remindingAll, setRemindingAll] = useState(false);
 
+  // Create modal state
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [createForm, setCreateForm] = useState({
+    customer_name: "",
+    customer_phone: "",
+    amount: "",
+    due_date: "",
+    notes: "",
+  });
+  const [creating, setCreating] = useState(false);
+
+  // Settle modal state
+  const [settleTarget, setSettleTarget] = useState<UdhariEntry | null>(null);
+  const [settleAmount, setSettleAmount] = useState("");
+  const [settlePaymentMode, setSettlePaymentMode] = useState("cash");
+  const [settling, setSettling] = useState(false);
+
+  // Delete state
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
   const fetchUdhari = async () => {
     setLoading(true);
     setFetchError(null);
@@ -120,20 +176,8 @@ export default function UdhariPage() {
       const res = await fetch(`${API_BASE_URL}/api/udhari/${DEMO_MERCHANT_ID}/ranked`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
-      const list: UdhariEntry[] = (Array.isArray(json) ? json : json.entries ?? json.data ?? []).map((d: Record<string, unknown>) => ({
-        id: d.id as string,
-        debtor_name: d.debtor_name as string,
-        phone: d.phone as string,
-        amount: d.amount as number,
-        amount_paid: d.amount_paid as number,
-        status: d.status as UdhariStatus,
-        days_overdue: d.days_overdue as number,
-        reminder_count: d.reminder_count as number,
-        risk_score: d.risk_score as number,
-        created_at: d.created_at as string,
-        last_reminder: d.last_reminder as string | undefined,
-        items: d.items as string | undefined,
-      }));
+      const raw = Array.isArray(json) ? json : json.entries ?? json.data ?? [];
+      const list: UdhariEntry[] = raw.map((d: Record<string, unknown>) => normalizeEntry(d));
       setData(list);
     } catch (err) {
       console.error("Udhari fetch failed, using fallback:", err);
@@ -159,9 +203,9 @@ export default function UdhariPage() {
   }, [data, tab, search]);
 
   // Summary stats
-  const totalPending = data.filter((e) => e.status !== "settled").reduce((s, e) => s + (e.amount - e.amount_paid), 0);
-  const recoveryRate = Math.round((data.filter((e) => e.status === "settled").length / data.length) * 100);
-  const avgDays = Math.round(data.filter((e) => e.days_overdue > 0).reduce((s, e) => s + e.days_overdue, 0) / Math.max(1, data.filter((e) => e.days_overdue > 0).length));
+  const totalPending = data.filter((e) => e.status !== "settled").reduce((s, e) => s + ((e.remaining != null ? e.remaining : e.amount - e.amount_paid)), 0);
+  const recoveryRate = data.length > 0 ? Math.round((data.filter((e) => e.status === "settled").length / data.length) * 100) : 0;
+  const avgDays = Math.round(data.filter((e) => (e.days_overdue ?? e.days_old ?? 0) > 0).reduce((s, e) => s + (e.days_overdue ?? e.days_old ?? 0), 0) / Math.max(1, data.filter((e) => (e.days_overdue ?? e.days_old ?? 0) > 0).length));
   const overdueCount = data.filter((e) => e.status === "overdue").length;
 
   const [remindToast, setRemindToast] = useState<{ name: string; message: string } | null>(null);
@@ -175,11 +219,11 @@ export default function UdhariPage() {
       let responseMessage = "";
       if (res.ok) {
         const json = await res.json().catch(() => ({}));
-        responseMessage = json.message || json.whatsapp_message || `Payment reminder of ${formatINR(entry?.amount ?? 0 - (entry?.amount_paid ?? 0))} sent.`;
+        responseMessage = json.message || json.whatsapp_message || `Payment reminder sent.`;
       }
       setRemindToast({
         name: entry?.debtor_name || "Customer",
-        message: responseMessage || `Reminder sent for ${formatINR((entry?.amount ?? 0) - (entry?.amount_paid ?? 0))}`,
+        message: responseMessage || `Reminder sent for ${formatINR((entry?.remaining != null ? entry.remaining : (entry?.amount ?? 0) - (entry?.amount_paid ?? 0)))}`,
       });
       setTimeout(() => setRemindToast(null), 4000);
     } catch {
@@ -197,15 +241,113 @@ export default function UdhariPage() {
     setRemindingId(null);
   };
 
-  const handleSettle = async (id: string) => {
+  const handleSettle = async (entry: UdhariEntry) => {
+    const remaining = entry.remaining != null ? entry.remaining : entry.amount - entry.amount_paid;
+    setSettleTarget(entry);
+    setSettleAmount(String(remaining));
+    setSettlePaymentMode("cash");
+  };
+
+  const submitSettle = async () => {
+    if (!settleTarget) return;
+    const amount = parseFloat(settleAmount);
+    if (!amount || amount <= 0) return;
+    setSettling(true);
     try {
-      await fetch(`${API_BASE_URL}/api/udhari/${id}/settle`, { method: "PATCH" });
-    } catch { /* fallback to local update */ }
-    setData((prev) =>
-      prev.map((e) =>
-        e.id === id ? { ...e, status: "settled" as UdhariStatus, amount_paid: e.amount, days_overdue: 0 } : e
-      )
-    );
+      const res = await fetch(`${API_BASE_URL}/api/udhari/${settleTarget.id}/settle`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amount, payment_mode: settlePaymentMode }),
+      });
+      if (res.ok) {
+        const updated = await res.json().catch(() => null);
+        if (updated) {
+          setData((prev) =>
+            prev.map((e) => (e.id === settleTarget.id ? normalizeEntry(updated as Record<string, unknown>) : e))
+          );
+        } else {
+          // Fallback local update
+          const newPaid = settleTarget.amount_paid + amount;
+          const newRemaining = settleTarget.amount - newPaid;
+          setData((prev) =>
+            prev.map((e) =>
+              e.id === settleTarget.id
+                ? { ...e, amount_paid: newPaid, remaining: newRemaining, status: newRemaining <= 0 ? "settled" as UdhariStatus : "partial" as UdhariStatus }
+                : e
+            )
+          );
+        }
+      } else {
+        // Fallback local update
+        const newPaid = settleTarget.amount_paid + amount;
+        const newRemaining = settleTarget.amount - newPaid;
+        setData((prev) =>
+          prev.map((e) =>
+            e.id === settleTarget.id
+              ? { ...e, amount_paid: newPaid, remaining: newRemaining, status: newRemaining <= 0 ? "settled" as UdhariStatus : "partial" as UdhariStatus }
+              : e
+          )
+        );
+      }
+    } catch {
+      // Fallback local update
+      const newPaid = settleTarget.amount_paid + amount;
+      const newRemaining = settleTarget.amount - newPaid;
+      setData((prev) =>
+        prev.map((e) =>
+          e.id === settleTarget.id
+            ? { ...e, amount_paid: newPaid, remaining: newRemaining, status: newRemaining <= 0 ? "settled" as UdhariStatus : "partial" as UdhariStatus }
+            : e
+        )
+      );
+    }
+    setSettling(false);
+    setSettleTarget(null);
+  };
+
+  const handleDelete = async (entry: UdhariEntry) => {
+    const remaining = entry.remaining != null ? entry.remaining : entry.amount - entry.amount_paid;
+    const confirmed = window.confirm(`Delete Rs ${remaining.toLocaleString("en-IN")} udhari for ${entry.debtor_name}?`);
+    if (!confirmed) return;
+    setDeletingId(entry.id);
+    try {
+      await fetch(`${API_BASE_URL}/api/udhari/${entry.id}`, { method: "DELETE" });
+    } catch {
+      // still remove locally
+    }
+    setData((prev) => prev.filter((e) => e.id !== entry.id));
+    setDeletingId(null);
+  };
+
+  const handleCreate = async () => {
+    if (!createForm.customer_name.trim() || !createForm.amount) return;
+    setCreating(true);
+    try {
+      const body: Record<string, unknown> = {
+        merchant_id: DEMO_MERCHANT_ID,
+        customer_name: createForm.customer_name.trim(),
+        amount: parseFloat(createForm.amount),
+      };
+      if (createForm.customer_phone.trim()) body.customer_phone = createForm.customer_phone.trim();
+      if (createForm.due_date) body.due_date = createForm.due_date;
+      if (createForm.notes.trim()) body.description = createForm.notes.trim();
+
+      const res = await fetch(`${API_BASE_URL}/api/udhari/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        setShowCreateModal(false);
+        setCreateForm({ customer_name: "", customer_phone: "", amount: "", due_date: "", notes: "" });
+        await fetchUdhari();
+      }
+    } catch {
+      // still close and refetch
+      setShowCreateModal(false);
+      setCreateForm({ customer_name: "", customer_phone: "", amount: "", due_date: "", notes: "" });
+    }
+    setCreating(false);
   };
 
   const handleRemindAll = async () => {
@@ -276,22 +418,32 @@ export default function UdhariPage() {
             Track & collect pending payments
           </p>
         </div>
-        {overdueCount > 0 && (
+        <div className="flex items-center gap-2">
           <motion.button
             whileTap={{ scale: 0.95 }}
-            onClick={handleRemindAll}
-            disabled={remindingAll}
-            className={cn(
-              "flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition-colors",
-              remindingAll
-                ? "bg-gray-100 text-gray-400"
-                : "bg-red-500 text-white active:bg-red-600"
-            )}
+            onClick={() => setShowCreateModal(true)}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-munim-primary text-white active:bg-munim-primary/90 transition-colors"
           >
-            <Bell className="w-3.5 h-3.5" />
-            {remindingAll ? "Sending..." : `Remind All (${overdueCount})`}
+            <Plus className="w-3.5 h-3.5" />
+            Add
           </motion.button>
-        )}
+          {overdueCount > 0 && (
+            <motion.button
+              whileTap={{ scale: 0.95 }}
+              onClick={handleRemindAll}
+              disabled={remindingAll}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition-colors",
+                remindingAll
+                  ? "bg-gray-100 text-gray-400"
+                  : "bg-red-500 text-white active:bg-red-600"
+              )}
+            >
+              <Bell className="w-3.5 h-3.5" />
+              {remindingAll ? "Sending..." : `Remind All (${overdueCount})`}
+            </motion.button>
+          )}
+        </div>
       </div>
 
       {/* Summary Stats */}
@@ -375,8 +527,12 @@ export default function UdhariPage() {
           {filtered.map((entry, i) => {
             const isExpanded = expandedId === entry.id;
             const badge = getStatusBadge(entry.status);
+            const riskBadge = getRiskBadge(entry.risk_score);
             const riskColor = getRiskColor(entry.risk_score);
-            const remaining = entry.amount - entry.amount_paid;
+            const remaining = entry.remaining != null ? entry.remaining : entry.amount - entry.amount_paid;
+            const daysInfo = entry.days_overdue ?? entry.days_old ?? 0;
+            const lastReminder = entry.last_reminder || entry.last_reminder_at;
+            const phoneNumber = entry.debtor_phone || entry.phone || "";
 
             return (
               <motion.div
@@ -389,63 +545,75 @@ export default function UdhariPage() {
                 className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden"
               >
                 {/* Main Row */}
-                <button
-                  onClick={() => setExpandedId(isExpanded ? null : entry.id)}
-                  className="w-full px-4 py-3 flex items-center gap-3 text-left"
-                >
-                  {/* Avatar */}
-                  <div className={cn(
-                    "w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold shrink-0",
-                    entry.status === "overdue" ? "bg-red-100 text-red-700" :
-                    entry.status === "settled" ? "bg-emerald-100 text-emerald-700" :
-                    "bg-blue-100 text-blue-700"
-                  )}>
-                    {entry.debtor_name.charAt(0)}
-                  </div>
-
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-semibold text-gray-900 truncate">
-                        {entry.debtor_name}
-                      </span>
-                      <span className={cn("text-[10px] font-medium px-1.5 py-0.5 rounded-md", badge.className)}>
-                        {badge.label}
-                      </span>
-                      {entry.risk_score > 0 && (
-                        <span className={cn("text-[10px] font-medium px-1.5 py-0.5 rounded-md",
-                          entry.risk_score >= 70 ? "bg-red-50 text-red-700" :
-                          entry.risk_score >= 40 ? "bg-amber-50 text-amber-700" :
-                          "bg-emerald-50 text-emerald-700"
-                        )}>
-                          {entry.risk_score >= 70 ? "\uD83D\uDD34 High Risk" : entry.risk_score >= 40 ? "\uD83D\uDFE1 Medium" : "\uD83D\uDFE2 Low"}
-                        </span>
-                      )}
+                <div className="w-full px-4 py-3 flex items-center gap-3">
+                  {/* Avatar - clickable to expand */}
+                  <button
+                    onClick={() => setExpandedId(isExpanded ? null : entry.id)}
+                    className="flex items-center gap-3 flex-1 min-w-0 text-left"
+                  >
+                    <div className={cn(
+                      "w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold shrink-0",
+                      entry.status === "overdue" ? "bg-red-100 text-red-700" :
+                      entry.status === "settled" ? "bg-emerald-100 text-emerald-700" :
+                      "bg-blue-100 text-blue-700"
+                    )}>
+                      {entry.debtor_name.charAt(0)}
                     </div>
-                    <div className="flex items-center gap-2 mt-0.5">
-                      <span className="text-xs text-gray-500">
-                        {formatINR(remaining)} baaki
-                      </span>
-                      {entry.days_overdue > 0 && (
-                        <span className="text-[10px] text-red-500">
-                          {entry.days_overdue}d overdue
-                        </span>
-                      )}
-                    </div>
-                  </div>
 
-                  <div className="flex items-center gap-2">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-semibold text-gray-900 truncate">
+                          {entry.debtor_name}
+                        </span>
+                        <span className={cn("text-[10px] font-medium px-1.5 py-0.5 rounded-md", badge.className)}>
+                          {badge.label}
+                        </span>
+                        {entry.risk_score > 0 && (
+                          <span className={cn("text-[10px] font-medium px-1.5 py-0.5 rounded-md", riskBadge.className)}>
+                            {riskBadge.label}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <span className="text-xs text-gray-500">
+                          {formatINR(remaining)} baaki
+                        </span>
+                        {daysInfo > 0 && (
+                          <span className="text-[10px] text-red-500">
+                            {daysInfo}d overdue
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </button>
+
+                  <div className="flex items-center gap-1.5 shrink-0">
                     {entry.risk_score > 0 && (
                       <span className={cn("text-[10px] font-bold px-1.5 py-0.5 rounded-md", riskColor)}>
                         {entry.risk_score}
                       </span>
                     )}
-                    {isExpanded ? (
-                      <ChevronUp className="w-4 h-4 text-gray-400" />
-                    ) : (
-                      <ChevronDown className="w-4 h-4 text-gray-400" />
-                    )}
+                    {/* Delete button */}
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleDelete(entry); }}
+                      disabled={deletingId === entry.id}
+                      className="p-1.5 rounded-lg text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors disabled:opacity-50"
+                      title="Delete"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => setExpandedId(isExpanded ? null : entry.id)}
+                      className="p-1"
+                    >
+                      {isExpanded ? (
+                        <ChevronUp className="w-4 h-4 text-gray-400" />
+                      ) : (
+                        <ChevronDown className="w-4 h-4 text-gray-400" />
+                      )}
+                    </button>
                   </div>
-                </button>
+                </div>
 
                 {/* Expanded Detail */}
                 <AnimatePresence>
@@ -470,21 +638,21 @@ export default function UdhariPage() {
                           <div>
                             <span className="text-gray-400">Reminders Sent</span>
                             <p className="font-semibold text-gray-900">{entry.reminder_count}</p>
-                            {entry.last_reminder && (
+                            {lastReminder && (
                               <p className="text-[10px] text-gray-400 mt-0.5">
-                                Last: {new Date(entry.last_reminder).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}
+                                Last: {new Date(lastReminder).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}
                                 {" "}
-                                {new Date(entry.last_reminder).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true })}
+                                {new Date(lastReminder).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true })}
                               </p>
                             )}
                           </div>
                           <div>
-                            <span className="text-gray-400">Items</span>
-                            <p className="font-semibold text-gray-900">{entry.items || "N/A"}</p>
+                            <span className="text-gray-400">Items / Notes</span>
+                            <p className="font-semibold text-gray-900">{entry.items || entry.notes || "N/A"}</p>
                           </div>
                           <div>
                             <span className="text-gray-400">Phone</span>
-                            <p className="font-semibold text-gray-900">{entry.phone}</p>
+                            <p className="font-semibold text-gray-900">{phoneNumber || "N/A"}</p>
                           </div>
                           <div>
                             <span className="text-gray-400">Risk Score</span>
@@ -532,11 +700,11 @@ export default function UdhariPage() {
                               )}
                             </button>
                             <button
-                              onClick={() => handleSettle(entry.id)}
+                              onClick={() => handleSettle(entry)}
                               className="flex-1 flex items-center justify-center gap-1.5 py-2.5 bg-emerald-500 text-white text-xs font-semibold rounded-xl active:bg-emerald-600"
                             >
                               <CheckCircle className="w-3.5 h-3.5" />
-                              Mark Settled
+                              Settle
                             </button>
                           </div>
                         )}
@@ -556,6 +724,163 @@ export default function UdhariPage() {
           <p className="text-sm text-gray-400">No entries found</p>
         </div>
       )}
+
+      {/* Create Udhari Modal */}
+      <AnimatePresence>
+        {showCreateModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/40 z-50 flex items-end sm:items-center justify-center"
+            onClick={() => setShowCreateModal(false)}
+          >
+            <motion.div
+              initial={{ y: 100, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: 100, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white rounded-t-2xl sm:rounded-2xl w-full max-w-md p-5 space-y-4"
+            >
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-bold text-gray-900">Add Udhari</h2>
+                <button onClick={() => setShowCreateModal(false)} className="p-1 rounded-lg hover:bg-gray-100">
+                  <X className="w-5 h-5 text-gray-400" />
+                </button>
+              </div>
+
+              <div className="space-y-3">
+                <div>
+                  <label className="text-xs font-medium text-gray-600 mb-1 block">Name *</label>
+                  <input
+                    type="text"
+                    placeholder="Customer name"
+                    value={createForm.customer_name}
+                    onChange={(e) => setCreateForm((f) => ({ ...f, customer_name: e.target.value }))}
+                    className="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-munim-primary/20 focus:border-munim-primary"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-600 mb-1 block">Phone (optional)</label>
+                  <input
+                    type="text"
+                    placeholder="+91 9876543210"
+                    value={createForm.customer_phone}
+                    onChange={(e) => setCreateForm((f) => ({ ...f, customer_phone: e.target.value }))}
+                    className="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-munim-primary/20 focus:border-munim-primary"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-600 mb-1 block">Amount (Rs) *</label>
+                  <input
+                    type="number"
+                    placeholder="5000"
+                    value={createForm.amount}
+                    onChange={(e) => setCreateForm((f) => ({ ...f, amount: e.target.value }))}
+                    className="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-munim-primary/20 focus:border-munim-primary"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-600 mb-1 block">Due Date (optional)</label>
+                  <input
+                    type="date"
+                    value={createForm.due_date}
+                    onChange={(e) => setCreateForm((f) => ({ ...f, due_date: e.target.value }))}
+                    className="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-munim-primary/20 focus:border-munim-primary"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-600 mb-1 block">Notes (optional)</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Saree, Suit material"
+                    value={createForm.notes}
+                    onChange={(e) => setCreateForm((f) => ({ ...f, notes: e.target.value }))}
+                    className="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-munim-primary/20 focus:border-munim-primary"
+                  />
+                </div>
+              </div>
+
+              <button
+                onClick={handleCreate}
+                disabled={creating || !createForm.customer_name.trim() || !createForm.amount}
+                className="w-full py-3 bg-munim-primary text-white text-sm font-semibold rounded-xl active:bg-munim-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {creating ? "Creating..." : "Add Udhari"}
+              </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Settle Modal */}
+      <AnimatePresence>
+        {settleTarget && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/40 z-50 flex items-end sm:items-center justify-center"
+            onClick={() => setSettleTarget(null)}
+          >
+            <motion.div
+              initial={{ y: 100, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: 100, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white rounded-t-2xl sm:rounded-2xl w-full max-w-md p-5 space-y-4"
+            >
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-bold text-gray-900">Settle Udhari</h2>
+                <button onClick={() => setSettleTarget(null)} className="p-1 rounded-lg hover:bg-gray-100">
+                  <X className="w-5 h-5 text-gray-400" />
+                </button>
+              </div>
+
+              <div className="bg-gray-50 rounded-xl p-3 text-sm">
+                <p className="font-semibold text-gray-900">{settleTarget.debtor_name}</p>
+                <p className="text-gray-500 text-xs mt-1">
+                  Total: {formatINR(settleTarget.amount)} | Paid: {formatINR(settleTarget.amount_paid)} | Remaining: {formatINR(settleTarget.remaining != null ? settleTarget.remaining : settleTarget.amount - settleTarget.amount_paid)}
+                </p>
+              </div>
+
+              <div className="space-y-3">
+                <div>
+                  <label className="text-xs font-medium text-gray-600 mb-1 block">Settlement Amount (Rs)</label>
+                  <input
+                    type="number"
+                    value={settleAmount}
+                    onChange={(e) => setSettleAmount(e.target.value)}
+                    className="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-munim-primary/20 focus:border-munim-primary"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-600 mb-1 block">Payment Mode</label>
+                  <select
+                    value={settlePaymentMode}
+                    onChange={(e) => setSettlePaymentMode(e.target.value)}
+                    className="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-munim-primary/20 focus:border-munim-primary"
+                  >
+                    <option value="cash">Cash</option>
+                    <option value="upi">UPI</option>
+                    <option value="bank_transfer">Bank Transfer</option>
+                    <option value="paytm">Paytm</option>
+                    <option value="other">Other</option>
+                  </select>
+                </div>
+              </div>
+
+              <button
+                onClick={submitSettle}
+                disabled={settling || !settleAmount || parseFloat(settleAmount) <= 0}
+                className="w-full py-3 bg-emerald-600 text-white text-sm font-semibold rounded-xl active:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {settling ? "Settling..." : `Settle ${formatINR(parseFloat(settleAmount) || 0)}`}
+              </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Remind Success Toast */}
       <AnimatePresence>

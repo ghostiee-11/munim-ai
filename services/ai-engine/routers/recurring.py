@@ -215,15 +215,9 @@ async def list_upcoming(
     today = date.today()
     cutoff = today + timedelta(days=days)
 
-    # Get all active recurring payments
-    try:
-        from models import db
-        all_payments = db.select("recurring_payments", filters={"merchant_id": merchant_id, "is_active": True})
-    except Exception:
-        all_payments = [
-            r for r in _recurring_store.values()
-            if r["merchant_id"] == merchant_id and r.get("is_active", True)
-        ]
+    # Get all active recurring payments from Supabase
+    from models import db
+    all_payments = db.select("recurring_payments", filters={"merchant_id": merchant_id, "is_active": True})
 
     upcoming = []
     for p in all_payments:
@@ -248,31 +242,17 @@ async def update_recurring(recurring_id: str, body: RecurringUpdate):
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    # Try Supabase first
-    try:
-        from models import db
-        updated = db.update("recurring_payments", recurring_id, updates)
-        return updated
-    except Exception:
-        if recurring_id not in _recurring_store:
-            raise HTTPException(status_code=404, detail="Recurring payment not found")
-        _recurring_store[recurring_id].update(updates)
-        return _recurring_store[recurring_id]
+    from models import db
+    updated = db.update("recurring_payments", recurring_id, updates)
+    return updated
 
 
 @router.delete("/{recurring_id}")
 async def delete_recurring(recurring_id: str):
     """Deactivate a recurring payment schedule."""
-    # Try Supabase first
-    try:
-        from models import db
-        db.update("recurring_payments", recurring_id, {"is_active": False})
-        return {"status": "deactivated", "id": recurring_id}
-    except Exception:
-        if recurring_id in _recurring_store:
-            _recurring_store[recurring_id]["is_active"] = False
-            return {"status": "deactivated", "id": recurring_id}
-        raise HTTPException(status_code=404, detail="Recurring payment not found")
+    from models import db
+    db.update("recurring_payments", recurring_id, {"is_active": False})
+    return {"status": "deactivated", "id": recurring_id}
 
 
 @router.post("/{recurring_id}/execute")
@@ -283,15 +263,10 @@ async def execute_recurring(recurring_id: str, body: ExecuteRequest = ExecuteReq
     If auto_approve is False, sends a WhatsApp message asking for approval.
     If auto_approve is True, processes the payment immediately.
     """
-    # Find the payment
-    payment = _recurring_store.get(recurring_id)
-    if not payment:
-        try:
-            from models import db
-            results = db.select("recurring_payments", filters={"id": recurring_id})
-            payment = results[0] if results else None
-        except Exception:
-            pass
+    # Find the payment in Supabase
+    from models import db
+    results = db.select("recurring_payments", filters={"id": recurring_id})
+    payment = results[0] if results else None
 
     if not payment:
         raise HTTPException(status_code=404, detail="Recurring payment not found")
@@ -340,8 +315,10 @@ async def execute_recurring(recurring_id: str, body: ExecuteRequest = ExecuteReq
             logger.warning("WhatsApp send failed, payment still pending: %s", e)
 
         execution["status"] = "pending_approval"
-        _execution_store[execution_id] = execution
-        _pending_approvals[payment["merchant_id"]] = execution_id
+        try:
+            db.insert("recurring_executions", execution)
+        except Exception:
+            logger.warning("Could not store execution in DB")
 
         return {
             "status": "pending_approval",
@@ -353,7 +330,10 @@ async def execute_recurring(recurring_id: str, body: ExecuteRequest = ExecuteReq
         execution["status"] = "paid"
         execution["approved_at"] = datetime.now().isoformat()
         execution["paid_at"] = datetime.now().isoformat()
-        _execution_store[execution_id] = execution
+        try:
+            db.insert("recurring_executions", execution)
+        except Exception:
+            logger.warning("Could not store execution in DB")
 
         # Record as transaction
         try:
@@ -374,13 +354,7 @@ async def execute_recurring(recurring_id: str, body: ExecuteRequest = ExecuteReq
         # Advance next due date
         if payment.get("next_due") and payment.get("frequency"):
             new_due = _advance_due_date(payment["next_due"], payment["frequency"])
-            if recurring_id in _recurring_store:
-                _recurring_store[recurring_id]["next_due"] = new_due
-            try:
-                from models import db
-                db.update("recurring_payments", recurring_id, {"next_due": new_due})
-            except Exception:
-                pass
+            db.update("recurring_payments", recurring_id, {"next_due": new_due})
 
         # Send WhatsApp confirmation
         try:
@@ -406,24 +380,20 @@ async def approve_recurring(recurring_id: str, body: ApproveRequest):
     Approve, skip, or delay a pending recurring payment.
     Called from WhatsApp callback or manually.
     """
-    # Find the pending execution for this recurring payment
-    execution = None
-    for ex in _execution_store.values():
-        if ex["recurring_id"] == recurring_id and ex["status"] == "pending_approval":
-            execution = ex
-            break
+    from models import db
+
+    # Find the pending execution for this recurring payment in Supabase
+    try:
+        executions = db.select("recurring_executions", filters={"recurring_id": recurring_id, "status": "pending_approval"}, limit=1)
+        execution = executions[0] if executions else None
+    except Exception:
+        execution = None
 
     if not execution:
         raise HTTPException(status_code=404, detail="No pending approval found for this payment")
 
-    payment = _recurring_store.get(recurring_id)
-    if not payment:
-        try:
-            from models import db
-            results = db.select("recurring_payments", filters={"id": recurring_id})
-            payment = results[0] if results else None
-        except Exception:
-            pass
+    results = db.select("recurring_payments", filters={"id": recurring_id})
+    payment = results[0] if results else None
 
     action = body.action.lower()
 
@@ -452,13 +422,13 @@ async def approve_recurring(recurring_id: str, body: ApproveRequest):
             # Advance next due date
             if payment.get("next_due") and payment.get("frequency"):
                 new_due = _advance_due_date(payment["next_due"], payment["frequency"])
-                if recurring_id in _recurring_store:
-                    _recurring_store[recurring_id]["next_due"] = new_due
-                try:
-                    from models import db
-                    db.update("recurring_payments", recurring_id, {"next_due": new_due})
-                except Exception:
-                    pass
+                db.update("recurring_payments", recurring_id, {"next_due": new_due})
+
+        # Update execution in DB
+        try:
+            db.update("recurring_executions", execution["id"], {"status": "paid", "approved_at": execution["approved_at"], "paid_at": execution["paid_at"]})
+        except Exception:
+            pass
 
         return {
             "status": "paid",
@@ -472,13 +442,12 @@ async def approve_recurring(recurring_id: str, body: ApproveRequest):
         # Advance next due date even when skipped
         if payment and payment.get("next_due") and payment.get("frequency"):
             new_due = _advance_due_date(payment["next_due"], payment["frequency"])
-            if recurring_id in _recurring_store:
-                _recurring_store[recurring_id]["next_due"] = new_due
-            try:
-                from models import db
-                db.update("recurring_payments", recurring_id, {"next_due": new_due})
-            except Exception:
-                pass
+            db.update("recurring_payments", recurring_id, {"next_due": new_due})
+
+        try:
+            db.update("recurring_executions", execution["id"], {"status": "skipped"})
+        except Exception:
+            pass
 
         return {
             "status": "skipped",
@@ -492,13 +461,7 @@ async def approve_recurring(recurring_id: str, body: ApproveRequest):
             try:
                 current_due = datetime.strptime(payment["next_due"], "%Y-%m-%d").date()
                 new_due = (current_due + timedelta(days=delay_days)).isoformat()
-                if recurring_id in _recurring_store:
-                    _recurring_store[recurring_id]["next_due"] = new_due
-                try:
-                    from models import db
-                    db.update("recurring_payments", recurring_id, {"next_due": new_due})
-                except Exception:
-                    pass
+                db.update("recurring_payments", recurring_id, {"next_due": new_due})
                 execution["scheduled_date"] = new_due
             except ValueError:
                 pass
@@ -520,27 +483,23 @@ async def payment_history(
     limit: int = Query(50, ge=1, le=200),
 ):
     """Get execution history for a merchant's recurring payments."""
+    from models import db
+
     # Get all recurring IDs for this merchant
-    merchant_recurring_ids = set()
-    for r in _recurring_store.values():
-        if r["merchant_id"] == merchant_id:
-            merchant_recurring_ids.add(r["id"])
+    all_payments = db.select("recurring_payments", filters={"merchant_id": merchant_id})
+    merchant_recurring_ids = {p["id"] for p in all_payments}
 
-    try:
-        from models import db
-        all_payments = db.select("recurring_payments", filters={"merchant_id": merchant_id})
-        for p in all_payments:
-            merchant_recurring_ids.add(p["id"])
-    except Exception:
-        pass
+    # Fetch executions from Supabase
+    all_executions = []
+    for rid in merchant_recurring_ids:
+        try:
+            execs = db.select("recurring_executions", filters={"recurring_id": rid}, order_by="created_at", order_desc=True)
+            all_executions.extend(execs)
+        except Exception:
+            pass
 
-    # Filter executions by those recurring IDs
-    executions = [
-        ex for ex in _execution_store.values()
-        if ex["recurring_id"] in merchant_recurring_ids
-    ]
-    executions.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-    return executions[:limit]
+    all_executions.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    return all_executions[:limit]
 
 
 # ---------------------------------------------------------------------------
@@ -553,19 +512,31 @@ async def handle_whatsapp_approval(merchant_id: str, message_text: str) -> Optio
 
     Returns a reply message string, or None if the message wasn't an approval command.
     """
+    from models import db
     text = message_text.strip().upper()
 
-    # Check if there's a pending approval for this merchant
-    execution_id = _pending_approvals.get(merchant_id)
-    if not execution_id:
+    # Find pending execution for this merchant from Supabase
+    try:
+        # Get all recurring payment IDs for this merchant
+        payments = db.select("recurring_payments", filters={"merchant_id": merchant_id})
+        execution = None
+        for p in payments:
+            execs = db.select("recurring_executions", filters={"recurring_id": p["id"], "status": "pending_approval"}, limit=1)
+            if execs:
+                execution = execs[0]
+                break
+    except Exception:
         return None
 
-    execution = _execution_store.get(execution_id)
-    if not execution or execution["status"] != "pending_approval":
+    if not execution:
         return None
 
     recurring_id = execution["recurring_id"]
-    payment = _recurring_store.get(recurring_id)
+    try:
+        results = db.select("recurring_payments", filters={"id": recurring_id})
+        payment = results[0] if results else None
+    except Exception:
+        payment = None
 
     if text in ("APPROVE", "YES", "PAY", "OK", "HAAN", "HA"):
         execution["status"] = "paid"
@@ -575,7 +546,6 @@ async def handle_whatsapp_approval(merchant_id: str, message_text: str) -> Optio
         # Record as transaction
         if payment:
             try:
-                from models import db
                 db.insert("transactions", {
                     "merchant_id": payment["merchant_id"],
                     "amount": payment["amount"],
@@ -592,10 +562,12 @@ async def handle_whatsapp_approval(merchant_id: str, message_text: str) -> Optio
             # Advance due date
             if payment.get("next_due") and payment.get("frequency"):
                 new_due = _advance_due_date(payment["next_due"], payment["frequency"])
-                if recurring_id in _recurring_store:
-                    _recurring_store[recurring_id]["next_due"] = new_due
+                db.update("recurring_payments", recurring_id, {"next_due": new_due})
 
-        _pending_approvals.pop(merchant_id, None)
+        try:
+            db.update("recurring_executions", execution["id"], {"status": "paid", "approved_at": execution["approved_at"], "paid_at": execution["paid_at"]})
+        except Exception:
+            pass
         return f"Payment approved! Rs {execution['amount']:,.0f} for {execution.get('recurring_name', 'payment')} processed."
 
     elif text in ("SKIP", "NO", "NAHI", "NHIN", "CANCEL"):
@@ -603,10 +575,12 @@ async def handle_whatsapp_approval(merchant_id: str, message_text: str) -> Optio
 
         if payment and payment.get("next_due") and payment.get("frequency"):
             new_due = _advance_due_date(payment["next_due"], payment["frequency"])
-            if recurring_id in _recurring_store:
-                _recurring_store[recurring_id]["next_due"] = new_due
+            db.update("recurring_payments", recurring_id, {"next_due": new_due})
 
-        _pending_approvals.pop(merchant_id, None)
+        try:
+            db.update("recurring_executions", execution["id"], {"status": "skipped"})
+        except Exception:
+            pass
         return f"Payment skipped for {execution.get('recurring_name', 'this payment')}. Next due date updated."
 
     elif text.startswith("DELAY"):
@@ -622,8 +596,7 @@ async def handle_whatsapp_approval(merchant_id: str, message_text: str) -> Optio
             try:
                 current_due = datetime.strptime(payment["next_due"], "%Y-%m-%d").date()
                 new_due = (current_due + timedelta(days=delay_days)).isoformat()
-                if recurring_id in _recurring_store:
-                    _recurring_store[recurring_id]["next_due"] = new_due
+                db.update("recurring_payments", recurring_id, {"next_due": new_due})
                 execution["scheduled_date"] = new_due
             except ValueError:
                 pass
