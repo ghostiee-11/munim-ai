@@ -24,6 +24,8 @@ import {
   Award,
   RefreshCw,
   Truck,
+  Receipt,
+  Package,
 } from "lucide-react";
 
 interface NavItem {
@@ -43,6 +45,8 @@ const navItems: NavItem[] = [
   { label: "Govt Schemes", labelHindi: "सरकारी योजना", icon: Landmark, href: "/schemes" },
   { label: "Employees", labelHindi: "कर्मचारी", icon: UserCircle, href: "/employees" },
   { label: "AutoPay", labelHindi: "ऑटोपे", icon: RefreshCw, href: "/autopay" },
+  { label: "Invoices", labelHindi: "बिल/इनवॉइस", icon: Receipt, href: "/invoices" },
+  { label: "Inventory", labelHindi: "इन्वेंटरी", icon: Package, href: "/inventory" },
   { label: "Vendor Ledger", labelHindi: "विक्रेता खाता", icon: Truck, href: "/vendors" },
   { label: "WhatsApp", labelHindi: "वॉट्सऐप", icon: MessageCircle, href: "/whatsapp" },
   { label: "Soundbox", labelHindi: "साउंडबॉक्स", icon: Volume2, href: "/soundbox" },

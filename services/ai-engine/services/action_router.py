@@ -24,6 +24,54 @@ from services import realtime
 
 logger = logging.getLogger(__name__)
 
+# Valid categories for Groq recategorization
+_VALID_CATEGORIES = frozenset([
+    "saree", "textile", "stock", "rent", "salary", "utility",
+    "transport", "food", "personal", "supplier_payment", "general",
+])
+
+
+async def _groq_recategorize(
+    merchant_id: str, txn_id: str, description: str, current_category: str
+):
+    """Use Groq LLM to verify/correct transaction category asynchronously."""
+    try:
+        import httpx
+        from config import get_settings
+        settings = get_settings()
+        if not settings.groq_api_key:
+            return
+
+        prompt = (
+            f"Transaction: {description}. Current category: {current_category}. "
+            f"Merchant type: textile/saree shop. Correct category from: "
+            f"saree, textile, stock, rent, salary, utility, transport, food, "
+            f"personal, supplier_payment, general. Return ONLY the category word."
+        )
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {settings.groq_api_key}"},
+                json={
+                    "model": "llama-3.3-70b-versatile",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0,
+                    "max_tokens": 20,
+                },
+            )
+        if resp.status_code == 200:
+            new_cat = resp.json()["choices"][0]["message"]["content"].strip().lower()
+            if new_cat != current_category.lower() and new_cat in _VALID_CATEGORIES:
+                from models.db import get_client
+                get_client().table("transactions").update(
+                    {"category": new_cat}
+                ).eq("id", txn_id).execute()
+                logger.info(
+                    "Recategorized txn %s: %s -> %s", txn_id, current_category, new_cat
+                )
+    except Exception:
+        pass  # Non-blocking -- never fail the main flow
+
 
 class ActionResult:
     """Container for the outcome of an action dispatch."""
@@ -122,6 +170,14 @@ async def _add_income(merchant_id: str, entities: dict[str, Any]) -> ActionResul
         "source": "voice",
     })
 
+    # Async Groq re-categorization (non-blocking)
+    if txn.get("id"):
+        import asyncio as _asyncio_inc
+        _asyncio_inc.create_task(_groq_recategorize(
+            merchant_id, txn["id"],
+            description or f"Rs {amount} income", category,
+        ))
+
     # Auto-classify for GST HSN code
     try:
         from services.agents.gst_agent import auto_classify_transaction
@@ -199,6 +255,14 @@ async def _add_expense(merchant_id: str, entities: dict[str, Any]) -> ActionResu
         "recorded_at": datetime.now().isoformat(),
         "source": "voice",
     })
+
+    # Async Groq re-categorization (non-blocking)
+    if txn.get("id"):
+        import asyncio as _asyncio_exp
+        _asyncio_exp.create_task(_groq_recategorize(
+            merchant_id, txn["id"],
+            description or f"Rs {amount} {category}", category,
+        ))
 
     # Auto-classify for GST HSN code
     try:
@@ -730,6 +794,153 @@ async def _check_vendor_balance(merchant_id: str, entities: dict[str, Any]) -> A
             success=True,
             response_text=f"Total vendor outstanding {total} rupaye hai, jisme se {overdue} rupaye overdue hai.",
             data={"total_outstanding": total, "total_overdue": overdue, "payables_count": len(all_payables)},
+        )
+
+
+# ---------------------------------------------------------------------------
+# Handlers -- Invoice & Inventory
+# ---------------------------------------------------------------------------
+
+@_register("create_invoice")
+async def _create_invoice(merchant_id: str, entities: dict[str, Any]) -> ActionResult:
+    customer_name = entities.get("customer_name") or entities.get("party_name") or "Customer"
+    amount = entities.get("amount")
+    description = entities.get("description", "")
+
+    if not amount:
+        return ActionResult(False, "Invoice ke liye amount bataiye. Kitne ka bill banana hai?")
+
+    item_name = description if description else "Item"
+    items = [{"name": item_name, "qty": 1, "rate": float(amount), "description": description}]
+
+    try:
+        import json as _json
+        from routers.invoices import _generate_invoice_number, _classify_item, _deduct_inventory
+
+        invoice_number = await _generate_invoice_number(merchant_id)
+        line_items = []
+        subtotal = 0.0
+        total_gst = 0.0
+
+        for item in items:
+            classification = await _classify_item(item["name"], item["rate"])
+            hsn_code = classification["hsn_code"]
+            gst_rate = classification["gst_rate"]
+            item_total = item["qty"] * item["rate"]
+            gst_amount = round(item_total * gst_rate / 100, 2)
+            cgst = round(gst_amount / 2, 2)
+            sgst = round(gst_amount / 2, 2)
+
+            line_items.append({
+                "name": item["name"], "qty": item["qty"], "rate": item["rate"],
+                "hsn_code": hsn_code, "gst_rate": gst_rate,
+                "item_total": item_total, "gst_amount": gst_amount,
+                "cgst": cgst, "sgst": sgst,
+                "total_with_gst": round(item_total + gst_amount, 2),
+                "description": item.get("description", ""),
+            })
+            subtotal += item_total
+            total_gst += gst_amount
+            _deduct_inventory(merchant_id, item["name"], item["qty"])
+
+        grand_total = round(subtotal + total_gst, 2)
+        total_cgst = round(total_gst / 2, 2)
+        total_sgst = round(total_gst / 2, 2)
+
+        invoice = db.insert("invoices", {
+            "merchant_id": merchant_id,
+            "invoice_number": invoice_number,
+            "customer_name": customer_name,
+            "items": _json.dumps(line_items),
+            "subtotal": round(subtotal, 2),
+            "total_gst": round(total_gst, 2),
+            "cgst": total_cgst,
+            "sgst": total_sgst,
+            "grand_total": grand_total,
+            "amount_paid": 0,
+            "status": "unpaid",
+            "payment_mode": "cash",
+            "invoice_date": datetime.now().isoformat(),
+        })
+
+        db.insert("transactions", {
+            "merchant_id": merchant_id,
+            "amount": grand_total,
+            "type": "income",
+            "category": "Invoice",
+            "customer_name": customer_name,
+            "description": f"Invoice {invoice_number} - {customer_name}",
+            "recorded_at": datetime.now().isoformat(),
+            "source": "voice",
+        })
+
+        await realtime.emit_dashboard_refresh(merchant_id)
+
+        return ActionResult(
+            success=True,
+            response_text=(
+                f"Done! {customer_name} ka invoice {invoice_number} ban gaya. "
+                f"Amount: Rs {subtotal:,.0f} + GST Rs {total_gst:,.0f} = Rs {grand_total:,.0f}."
+            ),
+            data={"invoice": invoice},
+        )
+    except Exception:
+        logger.exception("Create invoice via voice failed")
+        return ActionResult(False, "Invoice banana mein kuch gadbad ho gayi. Kripya dobara try karein.")
+
+
+@_register("check_stock")
+async def _check_stock(merchant_id: str, entities: dict[str, Any]) -> ActionResult:
+    category = entities.get("category", "")
+    item_name = entities.get("item_name", "") or entities.get("description", "")
+
+    try:
+        items = db.select("inventory", filters={"merchant_id": merchant_id})
+    except Exception:
+        return ActionResult(False, "Inventory data load nahi ho paya.")
+
+    if not items:
+        return ActionResult(True, "Abhi inventory mein koi item nahi hai.")
+
+    search = (category or item_name).lower()
+    if search:
+        filtered = [
+            i for i in items
+            if search in (i.get("item_name", "") or "").lower()
+            or search in (i.get("category", "") or "").lower()
+        ]
+    else:
+        filtered = items
+
+    if not filtered:
+        return ActionResult(True, f"'{search}' se milta julta koi item nahi mila inventory mein.")
+
+    if len(filtered) <= 5:
+        lines = []
+        for i in filtered:
+            qty = i.get("current_qty", 0) or 0
+            name = i.get("item_name", "Item")
+            unit = i.get("unit", "pcs")
+            reorder = i.get("reorder_level", 0) or 0
+            status = "LOW!" if qty <= reorder else "OK"
+            lines.append(f"- {name}: {qty} {unit} [{status}]")
+        detail = "; ".join(lines)
+        return ActionResult(
+            success=True,
+            response_text=f"Stock status: {detail}. Total {len(filtered)} items.",
+            data={"items": filtered, "count": len(filtered)},
+        )
+    else:
+        total_value = sum((i.get("current_qty", 0) or 0) * (i.get("cost_price", 0) or 0) for i in filtered)
+        low = [i for i in filtered if (i.get("current_qty", 0) or 0) <= (i.get("reorder_level", 0) or 0)]
+        return ActionResult(
+            success=True,
+            response_text=(
+                f"Total {len(filtered)} items inventory mein hain. "
+                f"Stock value: Rs {total_value:,.0f}. "
+                f"{len(low)} items low stock mein hain."
+            ),
+            data={"count": len(filtered), "low_stock": len(low), "total_value": total_value},
         )
 
 

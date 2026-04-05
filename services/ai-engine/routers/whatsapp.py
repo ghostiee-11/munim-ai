@@ -133,9 +133,23 @@ async def twilio_webhook(request: Request):
     # --- Handle image messages ---
     if num_media > 0 and media_type and media_type.startswith("image/"):
         try:
+            import httpx as _httpx
             from services.ocr_service import extract_invoice_data
+
+            # Download image from Twilio (requires auth)
+            settings = get_settings()
+            async with _httpx.AsyncClient(timeout=30.0, follow_redirects=True) as dl_client:
+                auth = _httpx.BasicAuth(settings.twilio_account_sid, settings.twilio_auth_token)
+                img_resp = await dl_client.get(media_url, auth=auth)
+
+            if img_resp.status_code == 200 and len(img_resp.content) > 100:
+                import base64 as _b64
+                b64_image = _b64.b64encode(img_resp.content).decode()
+            else:
+                b64_image = media_url  # fallback to URL
+
             result = await extract_invoice_data(
-                image_url_or_bytes=media_url,
+                image_url_or_bytes=b64_image,
                 merchant_id=merchant_id,
                 extraction_type="invoice",
             )
@@ -143,16 +157,52 @@ async def twilio_webhook(request: Request):
                 data = result["data"]
                 total = data.get("total", 0)
                 vendor = data.get("vendor", "Unknown")
-                items_count = len(data.get("items", []))
-                reply_text = (
-                    f"Invoice processed!\n"
-                    f"Vendor: {vendor}\n"
-                    f"Items: {items_count}\n"
-                    f"Total: Rs {total:,.0f}\n\n"
-                    f"Kya isko transaction mein add karein?"
-                )
+                items = data.get("items", [])
+                items_count = len(items)
 
-                # Log the extracted data as a transaction
+                # Auto-create inventory items from extracted invoice
+                inventory_created = 0
+                inventory_updated = 0
+                try:
+                    existing_inv = db.select("inventory", filters={"merchant_id": merchant_id})
+                    for raw_item in items:
+                        item_name = raw_item.get("name", "").strip()
+                        if not item_name:
+                            continue
+                        qty = int(float(raw_item.get("qty", 1) or 1))
+                        amount = float(raw_item.get("amount", 0) or raw_item.get("rate", 0) or 0)
+                        cost_price = round(amount / qty, 2) if qty > 0 else amount
+
+                        # Fuzzy match
+                        matched = None
+                        item_lower = item_name.lower().strip()
+                        for ex in existing_inv:
+                            ex_name = ex.get("item_name", "").lower().strip()
+                            if ex_name == item_lower or item_lower in ex_name or ex_name in item_lower:
+                                matched = ex
+                                break
+
+                        if matched:
+                            new_qty = int((matched.get("current_qty", 0) or 0) + qty)
+                            db.update("inventory", matched["id"], {"current_qty": new_qty})
+                            inventory_updated += 1
+                        else:
+                            db.insert("inventory", {
+                                "merchant_id": merchant_id,
+                                "item_name": item_name,
+                                "category": "",
+                                "current_qty": qty,
+                                "unit": raw_item.get("unit", "pcs"),
+                                "cost_price": cost_price,
+                                "selling_price": 0,
+                                "reorder_level": 5,
+                                "supplier_name": vendor,
+                            })
+                            inventory_created += 1
+                except Exception as inv_err:
+                    logger.warning("Inventory auto-create from WhatsApp failed: %s", inv_err)
+
+                # Log as expense transaction
                 try:
                     db.insert("transactions", {
                         "merchant_id": merchant_id,
@@ -164,6 +214,24 @@ async def twilio_webhook(request: Request):
                     })
                 except Exception:
                     pass
+
+                # Build reply
+                items_text = "\n".join(
+                    f"  {i+1}. {it.get('name','')} x{it.get('qty',1)} = Rs {it.get('amount',0):,.0f}"
+                    for i, it in enumerate(items)
+                )
+                inv_text = ""
+                if inventory_created or inventory_updated:
+                    inv_text = f"\nInventory: {inventory_created} naye items add, {inventory_updated} updated"
+
+                reply_text = (
+                    f"Invoice processed!\n"
+                    f"Vendor: {vendor}\n"
+                    f"Items ({items_count}):\n{items_text}\n"
+                    f"Total: Rs {total:,.0f}\n"
+                    f"{inv_text}\n"
+                    f"Transaction logged as expense."
+                )
             else:
                 reply_text = "Image mili, lekin invoice data extract nahi ho paya. Kripya clear photo bhejein."
         except Exception as e:

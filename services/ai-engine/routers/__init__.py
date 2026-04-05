@@ -21,6 +21,8 @@ from routers import (
     demo,
     paytm,
     recurring,
+    invoices,
+    inventory,
 )
 
 __all__ = [
@@ -39,4 +41,6 @@ __all__ = [
     "demo",
     "paytm",
     "recurring",
+    "invoices",
+    "inventory",
 ]

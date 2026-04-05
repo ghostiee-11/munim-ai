@@ -53,7 +53,7 @@ async def transcribe_audio(audio_bytes: bytes, language: str = "hi") -> str:
 
 NLU_SYSTEM_PROMPT = """You are the NLU engine for MunimAI, an AI accounting assistant for Indian small businesses.
 Given user speech (Hindi/Hinglish/English), extract:
-1. intent: one of [add_income, add_expense, personal_withdrawal, add_udhari, settle_udhari, get_today_summary, get_udhari_summary, get_balance, send_reminder, setup_recurring, add_vendor_payment, add_vendor_order, check_vendor_balance, greeting, help, unknown]
+1. intent: one of [add_income, add_expense, personal_withdrawal, add_udhari, settle_udhari, get_today_summary, get_udhari_summary, get_balance, send_reminder, setup_recurring, add_vendor_payment, add_vendor_order, check_vendor_balance, create_invoice, check_stock, greeting, help, unknown]
 2. entities: {amount, category, party_name, customer_name, beneficiary_name, description, phone, due_date, payment_mode, frequency, upi_id} -- only include what is present
 3. confidence: 0.0 to 1.0
 
@@ -81,6 +81,16 @@ Important:
   - Examples: "Mumbai Dyes se 50000 ka order karo" -> add_vendor_order, amount=50000, party_name="Mumbai Dyes"
 - "vendor ka balance" / "supplier ko kitna dena hai" / "vendor outstanding" = check_vendor_balance
   - Examples: "Rajan Textiles ko kitna dena hai" -> check_vendor_balance, party_name="Rajan Textiles"
+- "bill banao" / "invoice banao" / "bill bana do" / "ka bill banao" / "invoice create" / "bill generate" = create_invoice
+  - Examples: "Sharma ji ko 8500 ka bill banao" -> create_invoice, amount=8500, customer_name="Sharma ji"
+  - "invoice banao 5000 ka" -> create_invoice, amount=5000
+  - "Ravi ko 3 saree ka bill banao" -> create_invoice, customer_name="Ravi", description="3 saree"
+  - Extract: customer_name, amount, description (items if mentioned)
+- "kitna stock hai" / "stock batao" / "stock check" / "inventory" / "maal kitna hai" / "stock kya hai" = check_stock
+  - Examples: "saree ka stock batao" -> check_stock, category="saree"
+  - "kitna stock hai" -> check_stock (all stock)
+  - "inventory check karo" -> check_stock
+  - Extract: category or item_name if mentioned
 - "ghar ke liye" / "personal use" / "bete ki fees" / "wife ko" / "apne liye" / "ghar kharcha" = personal_withdrawal
   - Examples: "5000 ghar ke liye nikala" -> personal_withdrawal, amount=5000, description="ghar ke liye"
   - "2000 bete ki fees di" -> personal_withdrawal, amount=2000, description="bete ki fees"
@@ -408,19 +418,76 @@ async def chat_with_muneem(req: VoiceTextRequest):
     # Otherwise, use Groq LLM for conversational response
     import httpx
 
-    # Get merchant context for personalized responses
+    # Get comprehensive merchant context for personalized responses
+    context = ""
     try:
-        from models.db import select as db_select
-        transactions = db_select(
-            "transactions",
-            filters={"merchant_id": merchant_id},
-            limit=50,
-            order_by="recorded_at",
-            order_desc=True,
-        )
-        today_income = sum(t["amount"] for t in transactions if t.get("type") == "income")
-        today_expense = sum(t["amount"] for t in transactions if t.get("type") == "expense")
-        context = f"Merchant's recent data: Income Rs {today_income}, Expense Rs {today_expense}, Profit Rs {today_income - today_expense}"
+        from models.db import select as db_select, get_client as _get_chat_client
+
+        # Get P&L data
+        pnl_data = {}
+        try:
+            from routers.dashboard import get_pnl_report
+            pnl_result = await get_pnl_report(merchant_id)
+            if isinstance(pnl_result, dict) and not pnl_result.get("error"):
+                pnl_data = pnl_result
+        except Exception:
+            pass
+
+        # Get pending udhari total
+        total_udhari = 0
+        try:
+            _chat_db = _get_chat_client()
+            udhari_data = (
+                _chat_db.table("udhari")
+                .select("remaining")
+                .eq("merchant_id", merchant_id)
+                .neq("status", "settled")
+                .execute()
+            )
+            total_udhari = sum(
+                u.get("remaining", 0) or 0 for u in (udhari_data.data or [])
+            )
+        except Exception:
+            pass
+
+        # Get dashboard-level metrics
+        dash_data = {}
+        try:
+            from routers.dashboard import get_dashboard
+            dashboard_resp = await get_dashboard(merchant_id)
+            if isinstance(dashboard_resp, dict):
+                dash_data = dashboard_resp
+            elif hasattr(dashboard_resp, "model_dump"):
+                dash_data = dashboard_resp.model_dump()
+            elif hasattr(dashboard_resp, "dict"):
+                dash_data = dashboard_resp.dict()
+        except Exception:
+            pass
+
+        # Build rich context string
+        parts = []
+        if pnl_data.get("total_income"):
+            parts.append(f"Monthly Income: Rs {pnl_data['total_income']:,.0f}")
+        if pnl_data.get("total_expense"):
+            parts.append(f"Monthly Expense: Rs {pnl_data['total_expense']:,.0f}")
+        if pnl_data.get("business_profit") is not None:
+            parts.append(f"Business Profit: Rs {pnl_data['business_profit']:,.0f}")
+        if pnl_data.get("profit_margin") is not None:
+            parts.append(f"Margin: {pnl_data['profit_margin']}%")
+        if total_udhari:
+            parts.append(f"Pending Udhari: Rs {total_udhari:,.0f}")
+        if dash_data.get("cash_runway_days"):
+            parts.append(f"Cash Runway: {dash_data['cash_runway_days']} days")
+        if dash_data.get("payscore"):
+            parts.append(f"PayScore: {dash_data['payscore']}/100")
+        if dash_data.get("loan_eligible"):
+            parts.append(f"Loan Eligible: {dash_data['loan_eligible']}")
+        inc_cats = pnl_data.get("income_by_category", [])
+        if inc_cats and isinstance(inc_cats, list) and len(inc_cats) > 0:
+            top_cat = inc_cats[0].get("category", "N/A") if isinstance(inc_cats[0], dict) else "N/A"
+            parts.append(f"Top Income Category: {top_cat}")
+
+        context = "\n".join(parts) if parts else "No data available yet"
     except Exception:
         context = "No data available yet"
 
@@ -432,12 +499,13 @@ You speak in Hindi-English mix (Hinglish). You are warm, professional, and knowl
 - Government MSME schemes
 - Business growth advice
 
-Current merchant context: {context}
+Current merchant context:
+{context}
 
 User message: {text}
 
 Respond naturally in Hinglish. Keep response concise (2-3 sentences max).
-If the user asks about their business data, use the context provided.
+If the user asks about their business data, use the context provided with real numbers.
 If they ask to do something (log expense, create udhari), tell them to use voice commands or the specific page."""
 
     reply = "Maaf kijiye, abhi kuch technical issue hai. Kripya dobara try karein."

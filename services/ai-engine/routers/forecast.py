@@ -274,6 +274,105 @@ def _simple_forecast(
     )
 
 
+def _build_data_driven_recommendations(
+    txns: list[dict],
+    merchant_id: str,
+    total_income: float,
+    total_expense: float,
+    avg_income: float,
+    avg_expense: float,
+) -> list[dict]:
+    """
+    Build recommendations grounded in real merchant transaction data.
+
+    Analyses income trends, top expense categories, cash runway,
+    and biggest udhari recovery opportunities.
+    """
+    recommendations: list[dict] = []
+
+    # Compute how many unique days we have data for
+    all_dates = set()
+    for t in txns:
+        d = str(t.get("recorded_at", ""))[:10]
+        if d:
+            all_dates.add(d)
+    num_days = max(len(all_dates), 1)
+    avg_daily = total_income / max(num_days, 1)
+
+    # 1. Income trend -- compare last 7 days vs overall average
+    seven_days_ago = (date.today() - timedelta(days=7)).isoformat()
+    recent_income: dict[str, float] = {}
+    for t in txns:
+        d = str(t.get("recorded_at", ""))[:10]
+        if d >= seven_days_ago and t.get("type") == "income":
+            recent_income[d] = recent_income.get(d, 0) + t.get("amount", 0)
+    recent_days = max(len(recent_income), 1)
+    recent_7d_avg = sum(recent_income.values()) / recent_days if recent_income else 0
+
+    if avg_daily > 0 and recent_7d_avg < avg_daily * 0.85:
+        drop_pct = round((1 - recent_7d_avg / avg_daily) * 100)
+        recommendations.append({
+            "type": "income_drop",
+            "text_hi": f"Aapki avg daily income Rs {avg_daily:,.0f} hai. Pichle hafte {drop_pct}% kam hui. Kya hua?",
+            "impact": round(avg_daily - recent_7d_avg) * 7,
+        })
+
+    # 2. Top expense category
+    expense_by_cat: dict[str, float] = {}
+    for t in txns:
+        if t.get("type") == "expense":
+            cat = t.get("category", "General")
+            expense_by_cat[cat] = expense_by_cat.get(cat, 0) + t.get("amount", 0)
+    if expense_by_cat:
+        top_expense_cat = max(expense_by_cat, key=expense_by_cat.get)
+        top_expense_amt = expense_by_cat[top_expense_cat]
+        # Normalise to monthly estimate
+        monthly_top = round(top_expense_amt / max(num_days, 1) * 30)
+        recommendations.append({
+            "type": "expense_alert",
+            "text_hi": f"Sabse zyada kharcha: {top_expense_cat} (Rs {monthly_top:,.0f}/month).",
+            "impact": monthly_top,
+        })
+
+    # 3. Cash runway
+    avg_daily_expense = total_expense / max(num_days, 1)
+    cash_on_hand = total_income - total_expense
+    days_of_cash = round(cash_on_hand / max(avg_daily_expense, 1))
+    recommendations.append({
+        "type": "cash_runway",
+        "text_hi": f"Cash position: Rs {cash_on_hand:,.0f}. {days_of_cash} din ka kharcha cover kar sakta hai.",
+        "impact": cash_on_hand,
+    })
+
+    # 4. Biggest udhari recovery opportunity
+    try:
+        from models.db import get_client
+        supa = get_client()
+        biggest_udhari = (
+            supa.table("udhari")
+            .select("debtor_name,remaining")
+            .eq("merchant_id", merchant_id)
+            .neq("status", "settled")
+            .order("remaining", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if biggest_udhari.data:
+            u = biggest_udhari.data[0]
+            remaining = u.get("remaining", 0) or 0
+            if remaining > 0:
+                buffer_days = round(remaining / max(avg_daily_expense, 1))
+                recommendations.append({
+                    "type": "collection_opportunity",
+                    "text_hi": f"Agar {u['debtor_name']} ka Rs {remaining:,.0f} aa jaye toh {buffer_days} din ka buffer ban jayega.",
+                    "impact": remaining,
+                })
+    except Exception:
+        pass
+
+    return recommendations
+
+
 @router.get("/{merchant_id}", response_model=ForecastResponse)
 async def get_forecast(
     merchant_id: str,
@@ -301,6 +400,30 @@ async def get_forecast(
             _simple_forecast(txns, days)
         )
         pred_profit = round(pred_income - pred_expense, 2)
+
+        # Augment with data-driven recommendations from real merchant data
+        if txns:
+            daily_inc_vals: dict[str, float] = {}
+            daily_exp_vals: dict[str, float] = {}
+            for t in txns:
+                d = str(t.get("recorded_at", ""))[:10]
+                if t.get("type") == "income":
+                    daily_inc_vals[d] = daily_inc_vals.get(d, 0) + t.get("amount", 0)
+                else:
+                    daily_exp_vals[d] = daily_exp_vals.get(d, 0) + t.get("amount", 0)
+            all_d = set(list(daily_inc_vals.keys()) + list(daily_exp_vals.keys()))
+            n_days = max(len(all_d), 1)
+            hist_total_income = sum(daily_inc_vals.values())
+            hist_total_expense = sum(daily_exp_vals.values())
+            hist_avg_income = hist_total_income / n_days
+            hist_avg_expense = hist_total_expense / n_days
+
+            data_recs = _build_data_driven_recommendations(
+                txns, merchant_id,
+                hist_total_income, hist_total_expense,
+                hist_avg_income, hist_avg_expense,
+            )
+            recommendations.extend(data_recs)
 
         # Add inventory suggestions to each upcoming festival
         for fest in upcoming_festivals:
