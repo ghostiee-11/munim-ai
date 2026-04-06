@@ -477,8 +477,22 @@ async def cash_crunch_alert(merchant_id: str):
 
 @router.post("/cash-crunch-notify/{merchant_id}")
 async def send_cash_crunch_alert(merchant_id: str):
-    """Send cash crunch WhatsApp alert if runway < 7 days."""
+    """Send cash crunch WhatsApp alert if runway < 7 days. Max 1 per day."""
     from services.twilio_service import send_whatsapp as _send_wa
+
+    # 24-hour cooldown: check if already sent today
+    today_str = date.today().isoformat()
+    try:
+        recent = db.select_range(
+            "briefings",
+            filters={"merchant_id": merchant_id, "type": "cash_crunch"},
+            gte=("created_at", today_str),
+            limit=1,
+        )
+        if recent:
+            return {"sent": False, "reason": "Already sent today. Next alert tomorrow."}
+    except Exception:
+        pass  # Table may not exist, proceed
 
     data = await cash_crunch_alert(merchant_id)
     if data["runway_days"] >= 14:
@@ -493,6 +507,15 @@ async def send_cash_crunch_alert(merchant_id: str):
 
     try:
         result = await _send_wa(to="+917725014797", body=msg)
+        # Record so we don't send again today
+        try:
+            db.insert("briefings", {
+                "merchant_id": merchant_id,
+                "type": "cash_crunch",
+                "content": msg,
+            })
+        except Exception:
+            pass
         return {"sent": True, "message": msg, "data": data}
     except Exception as e:
         return {"sent": False, "message": msg, "error": str(e)}
