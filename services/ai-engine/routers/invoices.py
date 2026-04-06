@@ -202,6 +202,11 @@ async def create_invoice(body: CreateInvoiceRequest):
 
     # Store invoice in Supabase
     import json
+    # Store discount info in notes (Supabase table may not have discount columns)
+    notes_str = body.notes or ""
+    if discount_pct > 0:
+        notes_str = f"Discount: {discount_pct}% (Rs {discount_amount:,.0f}). {notes_str}".strip()
+
     invoice_data = {
         "merchant_id": body.merchant_id,
         "invoice_number": invoice_number,
@@ -209,8 +214,6 @@ async def create_invoice(body: CreateInvoiceRequest):
         "customer_phone": body.customer_phone,
         "items": json.dumps(line_items),
         "subtotal": round(subtotal, 2),
-        "discount_pct": discount_pct,
-        "discount_amount": discount_amount,
         "gst_total": round(total_gst, 2),
         "cgst": round(total_cgst, 2),
         "sgst": round(total_sgst, 2),
@@ -218,10 +221,18 @@ async def create_invoice(body: CreateInvoiceRequest):
         "amount_paid": 0,
         "status": "unpaid",
         "payment_mode": body.payment_mode,
-        "notes": body.notes,
+        "notes": notes_str or None,
             }
 
-    invoice = db.insert("invoices", invoice_data)
+    # Try with discount columns first, fallback without
+    try:
+        invoice_data["discount_pct"] = discount_pct
+        invoice_data["discount_amount"] = discount_amount
+        invoice = db.insert("invoices", invoice_data)
+    except Exception:
+        invoice_data.pop("discount_pct", None)
+        invoice_data.pop("discount_amount", None)
+        invoice = db.insert("invoices", invoice_data)
 
     # Auto-create income transaction
     try:
