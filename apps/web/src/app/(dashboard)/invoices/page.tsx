@@ -76,6 +76,7 @@ export default function InvoicesPage() {
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [lineItems, setLineItems] = useState([{ name: "", qty: 1, rate: 0 }]);
+  const [discountPct, setDiscountPct] = useState(0);
   const [creating, setCreating] = useState(false);
 
   // Fetch invoices
@@ -134,6 +135,7 @@ export default function InvoicesPage() {
             qty: i.qty,
             rate: i.rate,
           })),
+          discount_pct: discountPct,
         }),
       });
       if (res.ok) {
@@ -142,6 +144,7 @@ export default function InvoicesPage() {
         setCustomerName("");
         setCustomerPhone("");
         setLineItems([{ name: "", qty: 1, rate: 0 }]);
+        setDiscountPct(0);
         fetchInvoices();
       } else {
         toast.error("Failed to create invoice");
@@ -502,16 +505,65 @@ export default function InvoicesPage() {
                   </button>
                 </div>
 
-                {/* Subtotal preview */}
-                <div className="bg-gray-50 rounded-xl p-3 text-sm">
-                  <div className="flex justify-between text-gray-600">
-                    <span>Subtotal</span>
-                    <span className="font-medium text-gray-900">
-                      {formatINR(lineItems.reduce((s, i) => s + (i.qty * i.rate), 0))}
-                    </span>
+                {/* Discount */}
+                <div>
+                  <label className="text-xs font-medium text-gray-600 mb-1 block">Discount %</label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      value={discountPct || ""}
+                      onChange={(e) => setDiscountPct(Math.max(0, Math.min(100, Number(e.target.value))))}
+                      min={0}
+                      max={100}
+                      placeholder="0"
+                      className="w-24 px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#00BAF2]/30"
+                    />
+                    <div className="flex gap-1">
+                      {[5, 10, 15, 20].map((d) => (
+                        <button
+                          key={d}
+                          type="button"
+                          onClick={() => setDiscountPct(d)}
+                          className={`px-2.5 py-1.5 text-xs rounded-lg border transition-colors ${
+                            discountPct === d
+                              ? "bg-[#00BAF2] text-white border-[#00BAF2]"
+                              : "bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100"
+                          }`}
+                        >
+                          {d}%
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                  <p className="text-[10px] text-gray-400 mt-1">GST will be auto-calculated based on item classification</p>
                 </div>
+
+                {/* Subtotal preview */}
+                {(() => {
+                  const subtotal = lineItems.reduce((s, i) => s + (i.qty * i.rate), 0);
+                  const discAmt = Math.round(subtotal * discountPct / 100);
+                  const afterDisc = subtotal - discAmt;
+                  return (
+                    <div className="bg-gray-50 rounded-xl p-3 text-sm space-y-1">
+                      <div className="flex justify-between text-gray-600">
+                        <span>Subtotal</span>
+                        <span className="font-medium text-gray-900">{formatINR(subtotal)}</span>
+                      </div>
+                      {discountPct > 0 && (
+                        <div className="flex justify-between text-emerald-600">
+                          <span>Discount ({discountPct}%)</span>
+                          <span className="font-medium">-{formatINR(discAmt)}</span>
+                        </div>
+                      )}
+                      {discountPct > 0 && (
+                        <div className="flex justify-between text-gray-900 pt-1 border-t border-gray-200">
+                          <span className="font-medium">After Discount</span>
+                          <span className="font-bold">{formatINR(afterDisc)}</span>
+                        </div>
+                      )}
+                      <p className="text-[10px] text-gray-400 mt-1">GST will be auto-calculated on {discountPct > 0 ? "discounted" : ""} amount</p>
+                    </div>
+                  );
+                })()}
               </div>
 
               <div className="flex justify-end gap-3 px-5 py-4 border-t border-gray-100">

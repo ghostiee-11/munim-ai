@@ -42,6 +42,7 @@ class CreateInvoiceRequest(BaseModel):
     items: list[InvoiceItem]
     notes: Optional[str] = None
     payment_mode: str = "cash"
+    discount_pct: float = 0  # Discount percentage (0-100)
 
 
 class PayInvoiceRequest(BaseModel):
@@ -172,7 +173,32 @@ async def create_invoice(body: CreateInvoiceRequest):
         # Deduct inventory
         _deduct_inventory(body.merchant_id, item.name, item.qty)
 
-    total = round(subtotal + total_gst, 2)
+    # Apply discount
+    discount_pct = max(0, min(100, body.discount_pct))
+    discount_amount = round(subtotal * discount_pct / 100, 2)
+    discounted_subtotal = round(subtotal - discount_amount, 2)
+
+    # Recalculate GST on discounted subtotal
+    if discount_pct > 0:
+        total_gst = 0.0
+        total_cgst = 0.0
+        total_sgst = 0.0
+        for item in line_items:
+            item_discounted = round(item["item_total"] * (1 - discount_pct / 100), 2)
+            gst_amount = round(item_discounted * item["gst_rate"] / 100, 2)
+            cgst = round(gst_amount / 2, 2)
+            sgst = round(gst_amount / 2, 2)
+            item["discount_pct"] = discount_pct
+            item["discounted_total"] = item_discounted
+            item["gst_amount"] = gst_amount
+            item["cgst"] = cgst
+            item["sgst"] = sgst
+            item["total_with_gst"] = round(item_discounted + gst_amount, 2)
+            total_gst += gst_amount
+            total_cgst += cgst
+            total_sgst += sgst
+
+    total = round(discounted_subtotal + total_gst, 2)
 
     # Store invoice in Supabase
     import json
@@ -183,6 +209,8 @@ async def create_invoice(body: CreateInvoiceRequest):
         "customer_phone": body.customer_phone,
         "items": json.dumps(line_items),
         "subtotal": round(subtotal, 2),
+        "discount_pct": discount_pct,
+        "discount_amount": discount_amount,
         "gst_total": round(total_gst, 2),
         "cgst": round(total_cgst, 2),
         "sgst": round(total_sgst, 2),
@@ -327,16 +355,17 @@ async def share_invoice(invoice_id: str, body: ShareInvoiceRequest):
         )
         lines.append(f"   GST {item['gst_rate']}%: Rs {item['gst_amount']:,.0f} (CGST: {item['cgst']:,.0f} + SGST: {item['sgst']:,.0f})")
 
-    lines.extend([
-        "",
-        f"*Subtotal:* Rs {invoice.get('subtotal', 0):,.0f}",
-        f"*GST:* Rs {invoice.get('total_gst', 0):,.0f} (CGST: {invoice.get('cgst', 0):,.0f} + SGST: {invoice.get('sgst', 0):,.0f})",
-        f"*Grand Total:* Rs {invoice.get('total', 0):,.0f}",
-        "",
-        f"Status: {'PAID' if invoice.get('status') == 'paid' else 'UNPAID'}",
-        "",
-        "-- MunimAI Digital Invoice --",
-    ])
+    lines.append("")
+    lines.append(f"*Subtotal:* Rs {invoice.get('subtotal', 0):,.0f}")
+    disc = invoice.get("discount_pct", 0) or 0
+    if disc > 0:
+        lines.append(f"*Discount:* {disc}% = -Rs {invoice.get('discount_amount', 0):,.0f}")
+    lines.append(f"*GST:* Rs {invoice.get('total_gst', 0):,.0f} (CGST: {invoice.get('cgst', 0):,.0f} + SGST: {invoice.get('sgst', 0):,.0f})")
+    lines.append(f"*Grand Total:* Rs {invoice.get('total', 0):,.0f}")
+    lines.append("")
+    lines.append(f"Status: {'PAID' if invoice.get('status') == 'paid' else 'UNPAID'}")
+    lines.append("")
+    lines.append("-- MunimAI Digital Invoice --")
 
     message = "\n".join(lines)
 
