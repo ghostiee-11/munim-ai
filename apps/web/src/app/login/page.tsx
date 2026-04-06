@@ -257,7 +257,7 @@ export default function LoginPage() {
             transition={{ delay: 1 }}
             className="text-xs text-white/30"
           >
-            Trusted by 10,000+ Indian shopkeepers
+            Built for Indian small businesses
           </motion.p>
         </div>
       </div>

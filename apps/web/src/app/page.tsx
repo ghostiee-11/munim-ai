@@ -443,7 +443,7 @@ export default function LandingPage() {
               transition={{ delay: 0.6 }}
               className="text-sm text-white/40 mb-12"
             >
-              Trusted by 10,000+ Indian shopkeepers
+              Built for 63M+ Indian small businesses
             </motion.p>
 
             {/* Quick feature pills */}
